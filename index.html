@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Управление проектами</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="sidebar-header">
+      <h1>Проекты</h1>
+      <button id="addProjectBtn" class="icon-btn" title="Новый проект">+</button>
+    </div>
+    <ul id="projectList" class="project-list"></ul>
+  </aside>
+
+  <main class="main">
+    <header class="board-header">
+      <div>
+        <h2 id="projectTitle">Выберите проект</h2>
+        <div id="projectStats" class="project-stats"></div>
+      </div>
+      <div class="board-actions">
+        <button id="editProjectBtn" class="btn">Переименовать</button>
+        <button id="deleteProjectBtn" class="btn btn-danger">Удалить проект</button>
+        <button id="addTaskBtn" class="btn btn-primary">+ Задача</button>
+      </div>
+    </header>
+
+    <section id="board" class="board"></section>
+    <p id="emptyState" class="empty-state" hidden>Нет ни одного проекта. Создайте первый проект, чтобы начать.</p>
+  </main>
+</div>
+
+<dialog id="taskDialog" class="dialog">
+  <form id="taskForm" method="dialog">
+    <h3 id="taskDialogTitle">Новая задача</h3>
+    <input type="hidden" id="taskId">
+
+    <label>Название
+      <input type="text" id="taskName" required maxlength="120">
+    </label>
+
+    <label>Описание
+      <textarea id="taskDescription" rows="3" maxlength="1000"></textarea>
+    </label>
+
+    <div class="form-row">
+      <label>Приоритет
+        <select id="taskPriority">
+          <option value="low">Низкий</option>
+          <option value="medium" selected>Средний</option>
+          <option value="high">Высокий</option>
+        </select>
+      </label>
+
+      <label>Срок
+        <input type="date" id="taskDueDate">
+      </label>
+    </div>
+
+    <label>Статус
+      <select id="taskStatus">
+        <option value="todo">К выполнению</option>
+        <option value="inprogress">В работе</option>
+        <option value="done">Готово</option>
+      </select>
+    </label>
+
+    <div class="dialog-actions">
+      <button type="button" id="cancelTaskBtn" class="btn">Отмена</button>
+      <button type="submit" class="btn btn-primary">Сохранить</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="projectDialog" class="dialog">
+  <form id="projectForm" method="dialog">
+    <h3 id="projectDialogTitle">Новый проект</h3>
+    <label>Название проекта
+      <input type="text" id="projectName" required maxlength="80">
+    </label>
+    <div class="dialog-actions">
+      <button type="button" id="cancelProjectBtn" class="btn">Отмена</button>
+      <button type="submit" class="btn btn-primary">Сохранить</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="app.js"></script>
+</body>
+</html>
