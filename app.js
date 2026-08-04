@@ -1,27 +1,72 @@
 (function () {
   "use strict";
 
-  const STORAGE_KEY = "pm-app-state-v1";
+  const STORAGE_KEY = "pm-construction-v1";
+  const SVG_NS = "http://www.w3.org/2000/svg";
 
-  const STATUSES = [
-    { key: "todo", label: "К выполнению" },
-    { key: "inprogress", label: "В работе" },
-    { key: "done", label: "Готово" },
-  ];
+  function el(id) { return document.getElementById(id); }
 
-  const PRIORITY_LABEL = { low: "Низкий", medium: "Средний", high: "Высокий" };
+  function uid() {
+    return (crypto.randomUUID && crypto.randomUUID()) ||
+      `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  }
 
-  /** @returns {{projects: Array, activeProjectId: string|null}} */
+  function round2(v) { return Math.round((v + Number.EPSILON) * 100) / 100; }
+
+  function sum(arr, key) {
+    return round2(arr.reduce((acc, x) => acc + (Number(x[key]) || 0), 0));
+  }
+
+  function formatMoney(v) {
+    const n = Number(v) || 0;
+    const opts = Number.isInteger(n)
+      ? { maximumFractionDigits: 0 }
+      : { minimumFractionDigits: 2, maximumFractionDigits: 2 };
+    return new Intl.NumberFormat("ru-RU", opts).format(n);
+  }
+
+  function compactMoney(v) {
+    const abs = Math.abs(v);
+    const sign = v < 0 ? "-" : "";
+    if (abs >= 1e6) return sign + trimZero(abs / 1e6) + " млн";
+    if (abs >= 1e3) return sign + trimZero(abs / 1e3) + " тыс.";
+    return sign + String(Math.round(abs));
+  }
+
+  function trimZero(v) {
+    return v.toFixed(1).replace(/\.0$/, "");
+  }
+
+  function formatDate(iso) {
+    if (!iso) return "—";
+    const [y, m, d] = iso.split("-");
+    return `${d}.${m}.${y}`;
+  }
+
+  function formatDateShort(ms) {
+    const d = new Date(ms);
+    const dd = String(d.getUTCDate()).padStart(2, "0");
+    const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+    const yy = String(d.getUTCFullYear()).slice(2);
+    return `${dd}.${mm}.${yy}`;
+  }
+
+  function isoToMs(iso) {
+    return Date.parse(iso + "T00:00:00Z");
+  }
+
+  // --- State ---
+
   function loadState() {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return { projects: [], activeProjectId: null };
+      if (!raw) return { projects: [], activeProjectId: null, activeView: "overview", activeSectionId: null };
       const parsed = JSON.parse(raw);
-      if (!Array.isArray(parsed.projects)) return { projects: [], activeProjectId: null };
+      if (!Array.isArray(parsed.projects)) throw new Error("bad shape");
       return parsed;
     } catch (e) {
       console.error("Не удалось прочитать сохранённые данные", e);
-      return { projects: [], activeProjectId: null };
+      return { projects: [], activeProjectId: null, activeView: "overview", activeSectionId: null };
     }
   }
 
@@ -29,227 +74,671 @@
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   }
 
-  function uid() {
-    return (crypto.randomUUID && crypto.randomUUID()) ||
-      `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  }
-
   let state = loadState();
-
-  // DOM refs
-  const projectListEl = document.getElementById("projectList");
-  const projectTitleEl = document.getElementById("projectTitle");
-  const projectStatsEl = document.getElementById("projectStats");
-  const boardEl = document.getElementById("board");
-  const emptyStateEl = document.getElementById("emptyState");
-
-  const addProjectBtn = document.getElementById("addProjectBtn");
-  const editProjectBtn = document.getElementById("editProjectBtn");
-  const deleteProjectBtn = document.getElementById("deleteProjectBtn");
-  const addTaskBtn = document.getElementById("addTaskBtn");
-
-  const projectDialog = document.getElementById("projectDialog");
-  const projectForm = document.getElementById("projectForm");
-  const projectNameInput = document.getElementById("projectName");
-  const projectDialogTitle = document.getElementById("projectDialogTitle");
-  const cancelProjectBtn = document.getElementById("cancelProjectBtn");
-
-  const taskDialog = document.getElementById("taskDialog");
-  const taskForm = document.getElementById("taskForm");
-  const taskDialogTitle = document.getElementById("taskDialogTitle");
-  const taskIdInput = document.getElementById("taskId");
-  const taskNameInput = document.getElementById("taskName");
-  const taskDescriptionInput = document.getElementById("taskDescription");
-  const taskPriorityInput = document.getElementById("taskPriority");
-  const taskDueDateInput = document.getElementById("taskDueDate");
-  const taskStatusInput = document.getElementById("taskStatus");
-  const cancelTaskBtn = document.getElementById("cancelTaskBtn");
-
-  let editingProjectId = null; // set when projectDialog is used for rename
+  if (!state.activeProjectId && state.projects.length) {
+    state.activeProjectId = state.projects[0].id;
+  }
 
   function getActiveProject() {
     return state.projects.find((p) => p.id === state.activeProjectId) || null;
   }
 
-  function selectProject(id) {
-    state.activeProjectId = id;
-    saveState();
-    render();
+  function getActiveSection(project) {
+    if (!project) return null;
+    return project.sections.find((s) => s.id === state.activeSectionId) || null;
   }
+
+  // --- Computations ---
+
+  function computeSectionStats(section) {
+    const spent = round2(sum(section.contracts, "sum") + sum(section.materials, "sum"));
+    const earned = sum(section.progress, "amount");
+    const budget = Number(section.budget) || 0;
+    return {
+      budget,
+      spent,
+      earned,
+      margin: round2(earned - spent),
+      percent: budget > 0 ? (earned / budget) * 100 : 0,
+    };
+  }
+
+  function computeProjectStats(project) {
+    return project.sections.reduce(
+      (acc, s) => {
+        const st = computeSectionStats(s);
+        acc.budget += st.budget;
+        acc.spent += st.spent;
+        acc.earned += st.earned;
+        return acc;
+      },
+      { budget: 0, spent: 0, earned: 0 }
+    );
+  }
+
+  function buildTimeline(project) {
+    const events = [];
+    project.sections.forEach((s) => {
+      s.contracts.forEach((c) => events.push({ date: c.date, amount: Number(c.sum) || 0, kind: "spent" }));
+      s.materials.forEach((m) => events.push({ date: m.date, amount: Number(m.sum) || 0, kind: "spent" }));
+      s.progress.forEach((p) => events.push({ date: p.date, amount: Number(p.amount) || 0, kind: "earned" }));
+    });
+    if (!events.length) return [];
+    const dates = [...new Set(events.map((e) => e.date))].sort();
+    let cumEarned = 0;
+    let cumSpent = 0;
+    return dates.map((d) => {
+      events.filter((e) => e.date === d).forEach((e) => {
+        if (e.kind === "earned") cumEarned += e.amount;
+        else cumSpent += e.amount;
+      });
+      return { date: isoToMs(d), earned: round2(cumEarned), spent: round2(cumSpent) };
+    });
+  }
+
+  // --- DOM refs ---
+
+  const projectListEl = el("projectList");
+  const projectTitleEl = el("projectTitle");
+  const projectCustomerEl = el("projectCustomer");
+  const editProjectBtn = el("editProjectBtn");
+  const deleteProjectBtn = el("deleteProjectBtn");
+  const sectionTabsEl = el("sectionTabs");
+  const overviewViewEl = el("overviewView");
+  const sectionViewEl = el("sectionView");
+  const emptyStateEl = el("emptyState");
+  const noSectionStateEl = el("noSectionState");
+
+  const overviewStatsEl = el("overviewStats");
+  const chartContainerEl = el("chartContainer");
+  const chartEmptyEl = el("chartEmpty");
+  const sectionsTableBodyEl = el("sectionsTableBody");
+
+  const sectionNameEl = el("sectionName");
+  const sectionStatsEl = el("sectionStats");
+  const sectionProgressFillEl = el("sectionProgressFill");
+  const contractsBodyEl = el("contractsBody");
+  const contractsTotalEl = el("contractsTotal");
+  const materialsBodyEl = el("materialsBody");
+  const materialsTotalEl = el("materialsTotal");
+  const progressBodyEl = el("progressBody");
+  const progressTotalEl = el("progressTotal");
+
+  // --- Generic dialog cancel wiring ---
+  document.addEventListener("click", (e) => {
+    if (e.target.matches(".dialog-cancel")) {
+      const dialog = e.target.closest("dialog");
+      if (dialog) dialog.close();
+    }
+  });
+
+  // --- Render ---
 
   function render() {
     renderProjectList();
-    renderBoard();
+    const project = getActiveProject();
+
+    if (!project) {
+      projectTitleEl.textContent = "Выберите проект";
+      projectCustomerEl.textContent = "";
+      editProjectBtn.disabled = true;
+      deleteProjectBtn.disabled = true;
+      sectionTabsEl.hidden = true;
+      overviewViewEl.hidden = true;
+      sectionViewEl.hidden = true;
+      noSectionStateEl.hidden = true;
+      emptyStateEl.hidden = state.projects.length > 0;
+      return;
+    }
+
+    emptyStateEl.hidden = true;
+    projectTitleEl.textContent = project.name;
+    projectCustomerEl.textContent = project.customer ? `Заказчик: ${project.customer}` : "";
+    editProjectBtn.disabled = false;
+    deleteProjectBtn.disabled = false;
+
+    renderSectionTabs(project);
+
+    if (!project.sections.length) {
+      overviewViewEl.hidden = true;
+      sectionViewEl.hidden = true;
+      noSectionStateEl.hidden = false;
+      return;
+    }
+    noSectionStateEl.hidden = true;
+
+    const activeSection = getActiveSection(project);
+    if (state.activeView === "section" && activeSection) {
+      overviewViewEl.hidden = true;
+      sectionViewEl.hidden = false;
+      renderSectionView(project, activeSection);
+    } else {
+      state.activeView = "overview";
+      overviewViewEl.hidden = false;
+      sectionViewEl.hidden = true;
+      renderOverview(project);
+    }
   }
 
   function renderProjectList() {
     projectListEl.innerHTML = "";
     state.projects.forEach((project) => {
+      const stats = computeProjectStats(project);
       const li = document.createElement("li");
-      li.textContent = project.name;
       if (project.id === state.activeProjectId) li.classList.add("active");
 
-      const count = document.createElement("span");
-      count.className = "count";
-      count.textContent = project.tasks.length;
-      li.appendChild(count);
+      const name = document.createElement("div");
+      name.textContent = project.name;
+      li.appendChild(name);
 
-      li.addEventListener("click", () => selectProject(project.id));
+      const sub = document.createElement("span");
+      sub.className = "sub";
+      sub.textContent = `${formatMoney(stats.earned)} из ${formatMoney(stats.budget)}`;
+      li.appendChild(sub);
+
+      li.addEventListener("click", () => {
+        state.activeProjectId = project.id;
+        state.activeView = "overview";
+        state.activeSectionId = null;
+        saveState();
+        render();
+      });
       projectListEl.appendChild(li);
     });
   }
 
-  function renderBoard() {
-    const project = getActiveProject();
-    boardEl.innerHTML = "";
+  function renderSectionTabs(project) {
+    sectionTabsEl.hidden = false;
+    sectionTabsEl.innerHTML = "";
 
-    const hasProjects = state.projects.length > 0;
-    emptyStateEl.hidden = hasProjects;
-    boardEl.hidden = !hasProjects;
-
-    editProjectBtn.disabled = !project;
-    deleteProjectBtn.disabled = !project;
-    addTaskBtn.disabled = !project;
-
-    if (!project) {
-      projectTitleEl.textContent = "Выберите проект";
-      projectStatsEl.textContent = "";
-      return;
-    }
-
-    projectTitleEl.textContent = project.name;
-    const done = project.tasks.filter((t) => t.status === "done").length;
-    const total = project.tasks.length;
-    projectStatsEl.textContent = total
-      ? `Выполнено ${done} из ${total} задач`
-      : "Задач пока нет";
-
-    STATUSES.forEach((status) => {
-      const column = document.createElement("div");
-      column.className = "column";
-      column.dataset.status = status.key;
-
-      const header = document.createElement("div");
-      header.className = "column-header";
-      const tasksInColumn = project.tasks.filter((t) => t.status === status.key);
-      header.innerHTML = `<span>${status.label}</span><span>${tasksInColumn.length}</span>`;
-      column.appendChild(header);
-
-      tasksInColumn.forEach((task) => column.appendChild(renderTaskCard(task)));
-
-      column.addEventListener("dragover", (e) => {
-        e.preventDefault();
-        column.classList.add("drag-over");
-      });
-      column.addEventListener("dragleave", () => column.classList.remove("drag-over"));
-      column.addEventListener("drop", (e) => {
-        e.preventDefault();
-        column.classList.remove("drag-over");
-        const taskId = e.dataTransfer.getData("text/plain");
-        moveTask(taskId, status.key);
-      });
-
-      boardEl.appendChild(column);
+    const overviewBtn = document.createElement("button");
+    overviewBtn.textContent = "Обзор";
+    if (state.activeView === "overview") overviewBtn.classList.add("active");
+    overviewBtn.addEventListener("click", () => {
+      state.activeView = "overview";
+      saveState();
+      render();
     });
+    sectionTabsEl.appendChild(overviewBtn);
+
+    project.sections.forEach((section) => {
+      const btn = document.createElement("button");
+      btn.textContent = section.name;
+      if (state.activeView === "section" && state.activeSectionId === section.id) {
+        btn.classList.add("active");
+      }
+      btn.addEventListener("click", () => {
+        state.activeView = "section";
+        state.activeSectionId = section.id;
+        saveState();
+        render();
+      });
+      sectionTabsEl.appendChild(btn);
+    });
+
+    const addBtn = document.createElement("button");
+    addBtn.textContent = "+ Раздел";
+    addBtn.className = "add-tab";
+    addBtn.addEventListener("click", () => openSectionDialog(null));
+    sectionTabsEl.appendChild(addBtn);
   }
 
-  function renderTaskCard(task) {
-    const card = document.createElement("div");
-    card.className = "task-card";
-    card.draggable = true;
-    card.dataset.taskId = task.id;
+  function statTile(label, value, tone) {
+    const tile = document.createElement("div");
+    tile.className = "stat-tile";
+    const l = document.createElement("div");
+    l.className = "label";
+    l.textContent = label;
+    const v = document.createElement("div");
+    v.className = "value" + (tone ? ` ${tone}` : "");
+    v.textContent = value;
+    tile.appendChild(l);
+    tile.appendChild(v);
+    return tile;
+  }
 
-    card.addEventListener("dragstart", (e) => {
-      e.dataTransfer.setData("text/plain", task.id);
-      card.classList.add("dragging");
-    });
-    card.addEventListener("dragend", () => card.classList.remove("dragging"));
+  function renderOverview(project) {
+    const stats = computeProjectStats(project);
+    const margin = round2(stats.earned - stats.spent);
 
-    const title = document.createElement("div");
-    title.className = "task-card-title";
-    title.textContent = task.name;
-    card.appendChild(title);
+    overviewStatsEl.innerHTML = "";
+    overviewStatsEl.appendChild(statTile("Бюджет по договору", formatMoney(stats.budget)));
+    overviewStatsEl.appendChild(statTile("Заработано (освоено)", formatMoney(stats.earned)));
+    overviewStatsEl.appendChild(statTile("Потрачено", formatMoney(stats.spent)));
+    overviewStatsEl.appendChild(statTile("Маржа", formatMoney(margin), margin >= 0 ? "good" : "bad"));
 
-    if (task.description) {
-      const desc = document.createElement("div");
-      desc.className = "task-card-desc";
-      desc.textContent = task.description;
-      card.appendChild(desc);
+    const points = buildTimeline(project);
+    renderChart(points, stats.budget);
+
+    sectionsTableBodyEl.innerHTML = "";
+    if (!project.sections.length) {
+      const tr = document.createElement("tr");
+      const td = document.createElement("td");
+      td.colSpan = 6;
+      td.className = "table-empty";
+      td.textContent = "Нет разделов работ";
+      tr.appendChild(td);
+      sectionsTableBodyEl.appendChild(tr);
+    } else {
+      project.sections.forEach((section) => {
+        const st = computeSectionStats(section);
+        const tr = document.createElement("tr");
+        tr.innerHTML = "";
+        appendCell(tr, section.name);
+        appendCell(tr, formatMoney(st.budget));
+        appendCell(tr, formatMoney(st.spent));
+        appendCell(tr, formatMoney(st.earned));
+        appendCell(tr, formatMoney(st.margin), st.margin >= 0 ? "good" : "bad");
+        appendCell(tr, `${Math.round(st.percent)}%`);
+        tr.style.cursor = "pointer";
+        tr.addEventListener("click", () => {
+          state.activeView = "section";
+          state.activeSectionId = section.id;
+          saveState();
+          render();
+        });
+        sectionsTableBodyEl.appendChild(tr);
+      });
     }
+  }
 
-    const meta = document.createElement("div");
-    meta.className = "task-card-meta";
+  function appendCell(tr, text, tone) {
+    const td = document.createElement("td");
+    td.textContent = text;
+    if (tone) td.classList.add(tone);
+    tr.appendChild(td);
+  }
 
-    const priority = document.createElement("span");
-    priority.className = `priority priority-${task.priority}`;
-    priority.textContent = PRIORITY_LABEL[task.priority];
-    meta.appendChild(priority);
+  function renderSectionView(project, section) {
+    sectionNameEl.textContent = section.name;
+    const st = computeSectionStats(section);
 
-    if (task.dueDate) {
-      const due = document.createElement("span");
-      due.className = "due-date";
-      const isOverdue = task.status !== "done" && task.dueDate < todayIso();
-      if (isOverdue) due.classList.add("overdue");
-      due.textContent = formatDate(task.dueDate);
-      meta.appendChild(due);
+    sectionStatsEl.innerHTML = "";
+    sectionStatsEl.appendChild(statTile("Бюджет (доход)", formatMoney(st.budget)));
+    sectionStatsEl.appendChild(statTile("Затраты", formatMoney(st.spent)));
+    sectionStatsEl.appendChild(statTile("Освоено", formatMoney(st.earned)));
+    sectionStatsEl.appendChild(statTile("Маржа", formatMoney(st.margin), st.margin >= 0 ? "good" : "bad"));
+    sectionProgressFillEl.style.width = `${Math.min(100, Math.max(0, st.percent))}%`;
+
+    renderContracts(section);
+    renderMaterials(section);
+    renderProgress(section);
+  }
+
+  function renderEmptyRow(tbody, colspan, text) {
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = colspan;
+    td.className = "table-empty";
+    td.textContent = text;
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+  }
+
+  function renderContracts(section) {
+    contractsBodyEl.innerHTML = "";
+    if (!section.contracts.length) {
+      renderEmptyRow(contractsBodyEl, 5, "Договоров пока нет");
+    } else {
+      section.contracts
+        .slice()
+        .sort((a, b) => a.date.localeCompare(b.date))
+        .forEach((c) => {
+          const tr = document.createElement("tr");
+          appendCell(tr, c.name);
+          appendCell(tr, formatMoney(c.sum));
+          appendCell(tr, formatDate(c.date));
+          appendCell(tr, c.note || "");
+          tr.appendChild(rowActions(
+            () => openContractDialog(c),
+            () => deleteContract(section, c.id)
+          ));
+          contractsBodyEl.appendChild(tr);
+        });
     }
+    contractsTotalEl.textContent = formatMoney(sum(section.contracts, "sum"));
+  }
 
-    card.appendChild(meta);
+  function renderMaterials(section) {
+    materialsBodyEl.innerHTML = "";
+    if (!section.materials.length) {
+      renderEmptyRow(materialsBodyEl, 5, "Материалы пока не закупались");
+    } else {
+      section.materials
+        .slice()
+        .sort((a, b) => a.date.localeCompare(b.date))
+        .forEach((m) => {
+          const tr = document.createElement("tr");
+          appendCell(tr, m.name);
+          appendCell(tr, m.qty || "—");
+          appendCell(tr, formatMoney(m.sum));
+          appendCell(tr, formatDate(m.date));
+          tr.appendChild(rowActions(
+            () => openMaterialDialog(m),
+            () => deleteMaterial(section, m.id)
+          ));
+          materialsBodyEl.appendChild(tr);
+        });
+    }
+    materialsTotalEl.textContent = formatMoney(sum(section.materials, "sum"));
+  }
 
-    const actions = document.createElement("div");
-    actions.className = "task-card-actions";
+  function renderProgress(section) {
+    progressBodyEl.innerHTML = "";
+    if (!section.progress.length) {
+      renderEmptyRow(progressBodyEl, 5, "Выполнение работ ещё не отмечалось");
+    } else {
+      let running = 0;
+      section.progress
+        .slice()
+        .sort((a, b) => a.date.localeCompare(b.date))
+        .forEach((p) => {
+          running = round2(running + (Number(p.amount) || 0));
+          const tr = document.createElement("tr");
+          appendCell(tr, formatDate(p.date));
+          appendCell(tr, formatMoney(p.amount));
+          appendCell(tr, formatMoney(running));
+          appendCell(tr, p.note || "");
+          tr.appendChild(rowActions(
+            () => openProgressDialog(p),
+            () => deleteProgress(section, p.id)
+          ));
+          progressBodyEl.appendChild(tr);
+        });
+    }
+    progressTotalEl.textContent = formatMoney(sum(section.progress, "amount"));
+  }
+
+  function rowActions(onEdit, onDelete) {
+    const td = document.createElement("td");
+    const wrap = document.createElement("div");
+    wrap.className = "row-actions";
 
     const editBtn = document.createElement("button");
     editBtn.type = "button";
     editBtn.textContent = "Изменить";
-    editBtn.addEventListener("click", () => openTaskDialog(task));
-    actions.appendChild(editBtn);
+    editBtn.addEventListener("click", onEdit);
+    wrap.appendChild(editBtn);
 
-    const deleteBtn = document.createElement("button");
-    deleteBtn.type = "button";
-    deleteBtn.textContent = "Удалить";
-    deleteBtn.addEventListener("click", () => deleteTask(task.id));
-    actions.appendChild(deleteBtn);
+    const delBtn = document.createElement("button");
+    delBtn.type = "button";
+    delBtn.textContent = "Удалить";
+    delBtn.addEventListener("click", onDelete);
+    wrap.appendChild(delBtn);
 
-    card.appendChild(actions);
-
-    return card;
+    td.appendChild(wrap);
+    return td;
   }
 
-  function todayIso() {
-    return new Date().toISOString().slice(0, 10);
+  // --- Chart ---
+
+  function niceTicks(maxVal, targetCount) {
+    if (maxVal <= 0) return [0, 1];
+    const rawStep = maxVal / targetCount;
+    const magnitude = Math.pow(10, Math.floor(Math.log10(rawStep)));
+    const residual = rawStep / magnitude;
+    let step;
+    if (residual > 5) step = 10 * magnitude;
+    else if (residual > 2) step = 5 * magnitude;
+    else if (residual > 1) step = 2 * magnitude;
+    else step = magnitude;
+
+    const ticks = [];
+    const top = Math.ceil(maxVal / step) * step;
+    for (let v = 0; v <= top + 1e-9; v += step) ticks.push(round2(v));
+    return ticks;
   }
 
-  function formatDate(iso) {
-    const [y, m, d] = iso.split("-");
-    return `${d}.${m}.${y}`;
+  function renderChart(points, budget) {
+    chartContainerEl.innerHTML = "";
+    if (!points.length) {
+      chartEmptyEl.hidden = false;
+      return;
+    }
+    chartEmptyEl.hidden = true;
+
+    const width = 760;
+    const height = 280;
+    const pad = { left: 64, right: 24, top: 16, bottom: 32 };
+    const innerW = width - pad.left - pad.right;
+    const innerH = height - pad.top - pad.bottom;
+
+    const dates = points.map((p) => p.date);
+    const minDate = Math.min(...dates);
+    const maxDate = Math.max(...dates);
+    const maxVal = Math.max(budget || 0, ...points.map((p) => p.earned), ...points.map((p) => p.spent), 1);
+    const ticks = niceTicks(maxVal, 4);
+    const topTick = ticks[ticks.length - 1] || 1;
+
+    function x(d) {
+      return pad.left + (maxDate === minDate ? innerW / 2 : ((d - minDate) / (maxDate - minDate)) * innerW);
+    }
+    function y(v) {
+      return pad.top + innerH - (v / topTick) * innerH;
+    }
+
+    const svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+    svg.setAttribute("role", "img");
+    svg.setAttribute("aria-label", "График динамики освоения проекта: заработано и потрачено во времени");
+
+    ticks.forEach((t) => {
+      const gy = y(t);
+      const line = document.createElementNS(SVG_NS, "line");
+      line.setAttribute("x1", pad.left);
+      line.setAttribute("x2", width - pad.right);
+      line.setAttribute("y1", gy);
+      line.setAttribute("y2", gy);
+      line.style.stroke = "var(--grid)";
+      line.setAttribute("stroke-width", "1");
+      svg.appendChild(line);
+
+      const label = document.createElementNS(SVG_NS, "text");
+      label.setAttribute("x", pad.left - 8);
+      label.setAttribute("y", gy + 4);
+      label.setAttribute("text-anchor", "end");
+      label.setAttribute("font-size", "10");
+      label.style.fill = "var(--text-muted)";
+      label.textContent = compactMoney(t);
+      svg.appendChild(label);
+    });
+
+    const axis = document.createElementNS(SVG_NS, "line");
+    axis.setAttribute("x1", pad.left);
+    axis.setAttribute("x2", width - pad.right);
+    axis.setAttribute("y1", pad.top + innerH);
+    axis.setAttribute("y2", pad.top + innerH);
+    axis.style.stroke = "var(--baseline)";
+    axis.setAttribute("stroke-width", "1");
+    svg.appendChild(axis);
+
+    if (budget > 0 && budget <= topTick * 1.5) {
+      const by = y(budget);
+      const bline = document.createElementNS(SVG_NS, "line");
+      bline.setAttribute("x1", pad.left);
+      bline.setAttribute("x2", width - pad.right);
+      bline.setAttribute("y1", by);
+      bline.setAttribute("y2", by);
+      bline.style.stroke = "var(--text-muted)";
+      bline.setAttribute("stroke-width", "1");
+      bline.setAttribute("stroke-dasharray", "4 4");
+      svg.appendChild(bline);
+
+      const blabel = document.createElementNS(SVG_NS, "text");
+      blabel.setAttribute("x", width - pad.right);
+      blabel.setAttribute("y", Math.max(pad.top + 8, by - 4));
+      blabel.setAttribute("text-anchor", "end");
+      blabel.setAttribute("font-size", "10");
+      blabel.style.fill = "var(--text-muted)";
+      blabel.textContent = `Бюджет: ${compactMoney(budget)}`;
+      svg.appendChild(blabel);
+    }
+
+    const labelIdxs = points.length === 1 ? [0] : [0, Math.floor((points.length - 1) / 2), points.length - 1];
+    [...new Set(labelIdxs)].forEach((i) => {
+      const p = points[i];
+      const lx = x(p.date);
+      const t = document.createElementNS(SVG_NS, "text");
+      t.setAttribute("x", lx);
+      t.setAttribute("y", height - 8);
+      t.setAttribute("text-anchor", i === 0 ? "start" : i === points.length - 1 ? "end" : "middle");
+      t.setAttribute("font-size", "10");
+      t.style.fill = "var(--text-muted)";
+      t.textContent = formatDateShort(p.date);
+      svg.appendChild(t);
+    });
+
+    function drawSeries(key, colorVar) {
+      const d = points.map((p, i) => `${i === 0 ? "M" : "L"} ${x(p.date).toFixed(1)} ${y(p[key]).toFixed(1)}`).join(" ");
+      const path = document.createElementNS(SVG_NS, "path");
+      path.setAttribute("d", d);
+      path.setAttribute("fill", "none");
+      path.style.stroke = `var(${colorVar})`;
+      path.setAttribute("stroke-width", "2");
+      path.setAttribute("stroke-linejoin", "round");
+      path.setAttribute("stroke-linecap", "round");
+      svg.appendChild(path);
+
+      const last = points[points.length - 1];
+      const cx = x(last.date);
+      const cy = y(last[key]);
+      const ring = document.createElementNS(SVG_NS, "circle");
+      ring.setAttribute("cx", cx);
+      ring.setAttribute("cy", cy);
+      ring.setAttribute("r", "6");
+      ring.style.fill = "var(--panel)";
+      svg.appendChild(ring);
+      const dot = document.createElementNS(SVG_NS, "circle");
+      dot.setAttribute("cx", cx);
+      dot.setAttribute("cy", cy);
+      dot.setAttribute("r", "4");
+      dot.style.fill = `var(${colorVar})`;
+      svg.appendChild(dot);
+
+      return { cx, cy, value: last[key] };
+    }
+
+    const earnedEnd = drawSeries("earned", "--series-earned");
+    const spentEnd = drawSeries("spent", "--series-spent");
+
+    let earnedLabelY = earnedEnd.cy;
+    let spentLabelY = spentEnd.cy;
+    if (Math.abs(earnedEnd.cy - spentEnd.cy) < 16) {
+      if (earnedEnd.cy <= spentEnd.cy) {
+        earnedLabelY -= 8;
+        spentLabelY += 8;
+      } else {
+        earnedLabelY += 8;
+        spentLabelY -= 8;
+      }
+    }
+
+    function addEndLabel(cx, labelY, value, colorVar) {
+      const text = document.createElementNS(SVG_NS, "text");
+      text.setAttribute("x", Math.min(cx + 8, width - pad.right + 20));
+      text.setAttribute("y", labelY + 4);
+      text.setAttribute("font-size", "11");
+      text.setAttribute("font-weight", "600");
+      text.style.fill = "var(--text)";
+      text.textContent = compactMoney(value);
+      svg.appendChild(text);
+    }
+    addEndLabel(earnedEnd.cx, earnedLabelY, earnedEnd.value, "--series-earned");
+    addEndLabel(spentEnd.cx, spentLabelY, spentEnd.value, "--series-spent");
+
+    const crosshair = document.createElementNS(SVG_NS, "line");
+    crosshair.setAttribute("y1", pad.top);
+    crosshair.setAttribute("y2", pad.top + innerH);
+    crosshair.style.stroke = "var(--baseline)";
+    crosshair.setAttribute("stroke-width", "1");
+    crosshair.style.display = "none";
+    svg.appendChild(crosshair);
+
+    const overlay = document.createElementNS(SVG_NS, "rect");
+    overlay.setAttribute("x", pad.left);
+    overlay.setAttribute("y", pad.top);
+    overlay.setAttribute("width", innerW);
+    overlay.setAttribute("height", innerH);
+    overlay.setAttribute("fill", "transparent");
+    svg.appendChild(overlay);
+
+    chartContainerEl.appendChild(svg);
+
+    const tooltip = document.createElement("div");
+    tooltip.className = "chart-tooltip";
+    chartContainerEl.appendChild(tooltip);
+
+    overlay.addEventListener("pointermove", (e) => {
+      const rect = svg.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+      const scaleX = width / rect.width;
+      const scaleY = height / rect.height;
+      const px = (e.clientX - rect.left) * scaleX;
+
+      let nearest = 0;
+      let bestDist = Infinity;
+      points.forEach((p, i) => {
+        const d = Math.abs(x(p.date) - px);
+        if (d < bestDist) {
+          bestDist = d;
+          nearest = i;
+        }
+      });
+      const p = points[nearest];
+      const svgX = x(p.date);
+      crosshair.setAttribute("x1", svgX);
+      crosshair.setAttribute("x2", svgX);
+      crosshair.style.display = "block";
+
+      tooltip.innerHTML = "";
+      const dateEl = document.createElement("div");
+      dateEl.className = "tt-date";
+      dateEl.textContent = formatDateShort(p.date);
+      tooltip.appendChild(dateEl);
+
+      [
+        ["Заработано", p.earned, "--series-earned"],
+        ["Потрачено", p.spent, "--series-spent"],
+      ].forEach(([label, value, colorVar]) => {
+        const row = document.createElement("div");
+        row.className = "tt-row";
+        const key = document.createElement("span");
+        key.className = "tt-key";
+        key.style.background = `var(${colorVar})`;
+        row.appendChild(key);
+        const strong = document.createElement("strong");
+        strong.textContent = formatMoney(value);
+        row.appendChild(strong);
+        const span = document.createElement("span");
+        span.textContent = ` ${label}`;
+        row.appendChild(span);
+        tooltip.appendChild(row);
+      });
+
+      tooltip.classList.add("visible");
+      tooltip.style.left = `${svgX / scaleX}px`;
+      tooltip.style.top = `${Math.min(y(p.earned), y(p.spent)) / scaleY}px`;
+    });
+    overlay.addEventListener("pointerleave", () => {
+      crosshair.style.display = "none";
+      tooltip.classList.remove("visible");
+    });
   }
 
-  function moveTask(taskId, newStatus) {
-    const project = getActiveProject();
-    if (!project) return;
-    const task = project.tasks.find((t) => t.id === taskId);
-    if (!task || task.status === newStatus) return;
-    task.status = newStatus;
-    saveState();
-    render();
-  }
+  // --- Project CRUD ---
 
-  function deleteTask(taskId) {
-    const project = getActiveProject();
-    if (!project) return;
-    if (!confirm("Удалить эту задачу?")) return;
-    project.tasks = project.tasks.filter((t) => t.id !== taskId);
-    saveState();
-    render();
-  }
+  const projectDialog = el("projectDialog");
+  const projectForm = el("projectForm");
+  const projectDialogTitle = el("projectDialogTitle");
+  const projectNameInput = el("projectName");
+  const projectCustomerInput = el("projectCustomerInput");
+  let editingProjectId = null;
 
-  // --- Project dialog ---
-
-  addProjectBtn.addEventListener("click", () => {
+  el("addProjectBtn").addEventListener("click", () => {
     editingProjectId = null;
     projectDialogTitle.textContent = "Новый проект";
     projectNameInput.value = "";
+    projectCustomerInput.value = "";
     projectDialog.showModal();
     projectNameInput.focus();
   });
@@ -258,25 +747,30 @@
     const project = getActiveProject();
     if (!project) return;
     editingProjectId = project.id;
-    projectDialogTitle.textContent = "Переименовать проект";
+    projectDialogTitle.textContent = "Изменить проект";
     projectNameInput.value = project.name;
+    projectCustomerInput.value = project.customer || "";
     projectDialog.showModal();
     projectNameInput.focus();
   });
 
-  cancelProjectBtn.addEventListener("click", () => projectDialog.close());
-
   projectForm.addEventListener("submit", () => {
     const name = projectNameInput.value.trim();
     if (!name) return;
+    const customer = projectCustomerInput.value.trim();
 
     if (editingProjectId) {
       const project = state.projects.find((p) => p.id === editingProjectId);
-      if (project) project.name = name;
+      if (project) {
+        project.name = name;
+        project.customer = customer;
+      }
     } else {
-      const project = { id: uid(), name, tasks: [] };
+      const project = { id: uid(), name, customer, sections: [] };
       state.projects.push(project);
       state.activeProjectId = project.id;
+      state.activeView = "overview";
+      state.activeSectionId = null;
     }
     saveState();
     render();
@@ -285,67 +779,224 @@
   deleteProjectBtn.addEventListener("click", () => {
     const project = getActiveProject();
     if (!project) return;
-    if (!confirm(`Удалить проект «${project.name}» вместе со всеми задачами?`)) return;
+    if (!confirm(`Удалить проект «${project.name}» вместе со всеми разделами, договорами и материалами?`)) return;
     state.projects = state.projects.filter((p) => p.id !== project.id);
     state.activeProjectId = state.projects.length ? state.projects[0].id : null;
+    state.activeView = "overview";
+    state.activeSectionId = null;
     saveState();
     render();
   });
 
-  // --- Task dialog ---
+  // --- Section CRUD ---
 
-  function openTaskDialog(task) {
-    if (task) {
-      taskDialogTitle.textContent = "Изменить задачу";
-      taskIdInput.value = task.id;
-      taskNameInput.value = task.name;
-      taskDescriptionInput.value = task.description || "";
-      taskPriorityInput.value = task.priority;
-      taskDueDateInput.value = task.dueDate || "";
-      taskStatusInput.value = task.status;
-    } else {
-      taskDialogTitle.textContent = "Новая задача";
-      taskForm.reset();
-      taskIdInput.value = "";
-      taskPriorityInput.value = "medium";
-      taskStatusInput.value = "todo";
-    }
-    taskDialog.showModal();
-    taskNameInput.focus();
-  }
+  const sectionDialog = el("sectionDialog");
+  const sectionForm = el("sectionForm");
+  const sectionDialogTitle = el("sectionDialogTitle");
+  const sectionNameInput = el("sectionNameInput");
+  const sectionBudgetInput = el("sectionBudget");
+  let editingSectionId = null;
 
-  addTaskBtn.addEventListener("click", () => openTaskDialog(null));
-  cancelTaskBtn.addEventListener("click", () => taskDialog.close());
-
-  taskForm.addEventListener("submit", () => {
+  function openSectionDialog(section) {
     const project = getActiveProject();
     if (!project) return;
+    editingSectionId = section ? section.id : null;
+    sectionDialogTitle.textContent = section ? "Изменить вид работ" : "Новый вид работ";
+    sectionNameInput.value = section ? section.name : "";
+    sectionBudgetInput.value = section ? section.budget : "";
+    sectionDialog.showModal();
+    sectionNameInput.focus();
+  }
 
-    const name = taskNameInput.value.trim();
-    if (!name) return;
+  el("editSectionBtn").addEventListener("click", () => {
+    const project = getActiveProject();
+    const section = getActiveSection(project);
+    if (section) openSectionDialog(section);
+  });
 
-    const taskData = {
-      name,
-      description: taskDescriptionInput.value.trim(),
-      priority: taskPriorityInput.value,
-      dueDate: taskDueDateInput.value || null,
-      status: taskStatusInput.value,
-    };
+  sectionForm.addEventListener("submit", () => {
+    const project = getActiveProject();
+    if (!project) return;
+    const name = sectionNameInput.value.trim();
+    const budget = Number(sectionBudgetInput.value);
+    if (!name || Number.isNaN(budget) || budget < 0) return;
 
-    if (taskIdInput.value) {
-      const task = project.tasks.find((t) => t.id === taskIdInput.value);
-      if (task) Object.assign(task, taskData);
+    if (editingSectionId) {
+      const section = project.sections.find((s) => s.id === editingSectionId);
+      if (section) {
+        section.name = name;
+        section.budget = budget;
+      }
     } else {
-      project.tasks.push({ id: uid(), ...taskData });
+      const section = { id: uid(), name, budget, contracts: [], materials: [], progress: [] };
+      project.sections.push(section);
+      state.activeView = "section";
+      state.activeSectionId = section.id;
     }
-
     saveState();
     render();
   });
 
-  // Init: pick first project as active if none selected
-  if (!state.activeProjectId && state.projects.length) {
-    state.activeProjectId = state.projects[0].id;
+  el("deleteSectionBtn").addEventListener("click", () => {
+    const project = getActiveProject();
+    const section = getActiveSection(project);
+    if (!project || !section) return;
+    if (!confirm(`Удалить раздел «${section.name}» вместе со всеми договорами, материалами и записями о выполнении?`)) return;
+    project.sections = project.sections.filter((s) => s.id !== section.id);
+    state.activeView = "overview";
+    state.activeSectionId = null;
+    saveState();
+    render();
+  });
+
+  // --- Contract CRUD ---
+
+  const contractDialog = el("contractDialog");
+  const contractForm = el("contractForm");
+  const contractDialogTitle = el("contractDialogTitle");
+  const contractIdInput = el("contractId");
+  const contractNameInput = el("contractName");
+  const contractSumInput = el("contractSum");
+  const contractDateInput = el("contractDate");
+  const contractNoteInput = el("contractNote");
+
+  function openContractDialog(contract) {
+    contractDialogTitle.textContent = contract ? "Изменить договор" : "Новый договор";
+    contractIdInput.value = contract ? contract.id : "";
+    contractNameInput.value = contract ? contract.name : "";
+    contractSumInput.value = contract ? contract.sum : "";
+    contractDateInput.value = contract ? contract.date : "";
+    contractNoteInput.value = contract ? contract.note || "" : "";
+    contractDialog.showModal();
+    contractNameInput.focus();
+  }
+
+  el("addContractBtn").addEventListener("click", () => openContractDialog(null));
+
+  contractForm.addEventListener("submit", () => {
+    const project = getActiveProject();
+    const section = getActiveSection(project);
+    if (!section) return;
+    const name = contractNameInput.value.trim();
+    const sumVal = Number(contractSumInput.value);
+    const date = contractDateInput.value;
+    if (!name || Number.isNaN(sumVal) || sumVal < 0 || !date) return;
+    const note = contractNoteInput.value.trim();
+
+    if (contractIdInput.value) {
+      const c = section.contracts.find((x) => x.id === contractIdInput.value);
+      if (c) Object.assign(c, { name, sum: sumVal, date, note });
+    } else {
+      section.contracts.push({ id: uid(), name, sum: sumVal, date, note });
+    }
+    saveState();
+    render();
+  });
+
+  function deleteContract(section, id) {
+    if (!confirm("Удалить этот договор?")) return;
+    section.contracts = section.contracts.filter((c) => c.id !== id);
+    saveState();
+    render();
+  }
+
+  // --- Material CRUD ---
+
+  const materialDialog = el("materialDialog");
+  const materialForm = el("materialForm");
+  const materialDialogTitle = el("materialDialogTitle");
+  const materialIdInput = el("materialId");
+  const materialNameInput = el("materialName");
+  const materialQtyInput = el("materialQty");
+  const materialSumInput = el("materialSum");
+  const materialDateInput = el("materialDate");
+
+  function openMaterialDialog(material) {
+    materialDialogTitle.textContent = material ? "Изменить материал" : "Новый материал";
+    materialIdInput.value = material ? material.id : "";
+    materialNameInput.value = material ? material.name : "";
+    materialQtyInput.value = material ? material.qty || "" : "";
+    materialSumInput.value = material ? material.sum : "";
+    materialDateInput.value = material ? material.date : "";
+    materialDialog.showModal();
+    materialNameInput.focus();
+  }
+
+  el("addMaterialBtn").addEventListener("click", () => openMaterialDialog(null));
+
+  materialForm.addEventListener("submit", () => {
+    const project = getActiveProject();
+    const section = getActiveSection(project);
+    if (!section) return;
+    const name = materialNameInput.value.trim();
+    const sumVal = Number(materialSumInput.value);
+    const date = materialDateInput.value;
+    if (!name || Number.isNaN(sumVal) || sumVal < 0 || !date) return;
+    const qty = materialQtyInput.value.trim();
+
+    if (materialIdInput.value) {
+      const m = section.materials.find((x) => x.id === materialIdInput.value);
+      if (m) Object.assign(m, { name, qty, sum: sumVal, date });
+    } else {
+      section.materials.push({ id: uid(), name, qty, sum: sumVal, date });
+    }
+    saveState();
+    render();
+  });
+
+  function deleteMaterial(section, id) {
+    if (!confirm("Удалить эту закупку материалов?")) return;
+    section.materials = section.materials.filter((m) => m.id !== id);
+    saveState();
+    render();
+  }
+
+  // --- Progress CRUD ---
+
+  const progressDialog = el("progressDialog");
+  const progressForm = el("progressForm");
+  const progressDialogTitle = el("progressDialogTitle");
+  const progressIdInput = el("progressId");
+  const progressDateInput = el("progressDate");
+  const progressAmountInput = el("progressAmount");
+  const progressNoteInput = el("progressNote");
+
+  function openProgressDialog(entry) {
+    progressDialogTitle.textContent = entry ? "Изменить запись" : "Новая запись о выполнении";
+    progressIdInput.value = entry ? entry.id : "";
+    progressDateInput.value = entry ? entry.date : new Date().toISOString().slice(0, 10);
+    progressAmountInput.value = entry ? entry.amount : "";
+    progressNoteInput.value = entry ? entry.note || "" : "";
+    progressDialog.showModal();
+    progressAmountInput.focus();
+  }
+
+  el("addProgressBtn").addEventListener("click", () => openProgressDialog(null));
+
+  progressForm.addEventListener("submit", () => {
+    const project = getActiveProject();
+    const section = getActiveSection(project);
+    if (!section) return;
+    const amount = Number(progressAmountInput.value);
+    const date = progressDateInput.value;
+    if (Number.isNaN(amount) || amount < 0 || !date) return;
+    const note = progressNoteInput.value.trim();
+
+    if (progressIdInput.value) {
+      const p = section.progress.find((x) => x.id === progressIdInput.value);
+      if (p) Object.assign(p, { amount, date, note });
+    } else {
+      section.progress.push({ id: uid(), amount, date, note });
+    }
+    saveState();
+    render();
+  });
+
+  function deleteProgress(section, id) {
+    if (!confirm("Удалить эту запись о выполнении?")) return;
+    section.progress = section.progress.filter((p) => p.id !== id);
+    saveState();
+    render();
   }
 
   render();

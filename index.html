@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Управление проектами</title>
+<title>Управление строительным проектом</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -17,73 +17,217 @@
   </aside>
 
   <main class="main">
-    <header class="board-header">
+    <header class="project-header" id="projectHeader">
       <div>
         <h2 id="projectTitle">Выберите проект</h2>
-        <div id="projectStats" class="project-stats"></div>
+        <div id="projectCustomer" class="project-customer"></div>
       </div>
       <div class="board-actions">
-        <button id="editProjectBtn" class="btn">Переименовать</button>
+        <button id="editProjectBtn" class="btn">Изменить</button>
         <button id="deleteProjectBtn" class="btn btn-danger">Удалить проект</button>
-        <button id="addTaskBtn" class="btn btn-primary">+ Задача</button>
       </div>
     </header>
 
-    <section id="board" class="board"></section>
+    <nav id="sectionTabs" class="section-tabs"></nav>
+
+    <div id="overviewView" hidden>
+      <section class="stat-row" id="overviewStats"></section>
+      <section class="chart-card">
+        <div class="chart-card-header">
+          <h3>Динамика освоения проекта</h3>
+          <div class="legend" id="chartLegend">
+            <span class="legend-item"><span class="legend-key" style="background:var(--series-earned)"></span>Заработано</span>
+            <span class="legend-item"><span class="legend-key" style="background:var(--series-spent)"></span>Потрачено</span>
+          </div>
+        </div>
+        <div id="chartContainer" class="chart-container"></div>
+        <p id="chartEmpty" class="empty-state" hidden>Пока нет ни договоров/материалов, ни выполненных работ — график появится после первых записей.</p>
+      </section>
+      <section class="table-card">
+        <h3>Виды работ</h3>
+        <table class="data-table" id="sectionsTable">
+          <thead>
+            <tr>
+              <th>Вид работ</th>
+              <th>Бюджет (доход)</th>
+              <th>Затраты</th>
+              <th>Освоено</th>
+              <th>Маржа</th>
+              <th>% выполнения</th>
+            </tr>
+          </thead>
+          <tbody id="sectionsTableBody"></tbody>
+        </table>
+      </section>
+    </div>
+
+    <div id="sectionView" hidden>
+      <section class="section-summary">
+        <div class="section-summary-header">
+          <h3 id="sectionName"></h3>
+          <div class="board-actions">
+            <button id="editSectionBtn" class="btn">Изменить</button>
+            <button id="deleteSectionBtn" class="btn btn-danger">Удалить раздел</button>
+          </div>
+        </div>
+        <div class="stat-row" id="sectionStats"></div>
+        <div class="progress-track">
+          <div id="sectionProgressFill" class="progress-fill"></div>
+        </div>
+      </section>
+
+      <section class="table-card">
+        <div class="table-card-header">
+          <h3>Договоры с субподрядчиками</h3>
+          <button class="btn btn-primary" id="addContractBtn">+ Договор</button>
+        </div>
+        <table class="data-table">
+          <thead>
+            <tr><th>Название / подрядчик</th><th>Сумма</th><th>Дата</th><th>Примечание</th><th></th></tr>
+          </thead>
+          <tbody id="contractsBody"></tbody>
+          <tfoot><tr><td colspan="1">Итого</td><td id="contractsTotal"></td><td colspan="3"></td></tr></tfoot>
+        </table>
+      </section>
+
+      <section class="table-card">
+        <div class="table-card-header">
+          <h3>Закупленные материалы</h3>
+          <button class="btn btn-primary" id="addMaterialBtn">+ Материал</button>
+        </div>
+        <table class="data-table">
+          <thead>
+            <tr><th>Название / поставщик</th><th>Кол-во</th><th>Сумма</th><th>Дата</th><th></th></tr>
+          </thead>
+          <tbody id="materialsBody"></tbody>
+          <tfoot><tr><td colspan="1">Итого</td><td></td><td id="materialsTotal"></td><td colspan="2"></td></tr></tfoot>
+        </table>
+      </section>
+
+      <section class="table-card">
+        <div class="table-card-header">
+          <h3>Выполнение работ (акты)</h3>
+          <button class="btn btn-primary" id="addProgressBtn">+ Запись</button>
+        </div>
+        <table class="data-table">
+          <thead>
+            <tr><th>Дата</th><th>Сумма</th><th>Нарастающим итогом</th><th>Комментарий</th><th></th></tr>
+          </thead>
+          <tbody id="progressBody"></tbody>
+          <tfoot><tr><td>Итого</td><td id="progressTotal"></td><td colspan="3"></td></tr></tfoot>
+        </table>
+      </section>
+    </div>
+
     <p id="emptyState" class="empty-state" hidden>Нет ни одного проекта. Создайте первый проект, чтобы начать.</p>
+    <p id="noSectionState" class="empty-state" hidden>В проекте пока нет разделов работ. Добавьте первый вид работ (например «Фасадные работы»).</p>
   </main>
 </div>
 
-<dialog id="taskDialog" class="dialog">
-  <form id="taskForm" method="dialog">
-    <h3 id="taskDialogTitle">Новая задача</h3>
-    <input type="hidden" id="taskId">
-
-    <label>Название
-      <input type="text" id="taskName" required maxlength="120">
+<!-- Project dialog -->
+<dialog id="projectDialog" class="dialog">
+  <form id="projectForm" method="dialog">
+    <h3 id="projectDialogTitle">Новый проект</h3>
+    <label>Название проекта
+      <input type="text" id="projectName" required maxlength="120">
     </label>
-
-    <label>Описание
-      <textarea id="taskDescription" rows="3" maxlength="1000"></textarea>
+    <label>Заказчик
+      <input type="text" id="projectCustomerInput" maxlength="120" placeholder="Название заказчика">
     </label>
-
-    <div class="form-row">
-      <label>Приоритет
-        <select id="taskPriority">
-          <option value="low">Низкий</option>
-          <option value="medium" selected>Средний</option>
-          <option value="high">Высокий</option>
-        </select>
-      </label>
-
-      <label>Срок
-        <input type="date" id="taskDueDate">
-      </label>
-    </div>
-
-    <label>Статус
-      <select id="taskStatus">
-        <option value="todo">К выполнению</option>
-        <option value="inprogress">В работе</option>
-        <option value="done">Готово</option>
-      </select>
-    </label>
-
     <div class="dialog-actions">
-      <button type="button" id="cancelTaskBtn" class="btn">Отмена</button>
+      <button type="button" class="btn dialog-cancel">Отмена</button>
       <button type="submit" class="btn btn-primary">Сохранить</button>
     </div>
   </form>
 </dialog>
 
-<dialog id="projectDialog" class="dialog">
-  <form id="projectForm" method="dialog">
-    <h3 id="projectDialogTitle">Новый проект</h3>
-    <label>Название проекта
-      <input type="text" id="projectName" required maxlength="80">
+<!-- Section dialog -->
+<dialog id="sectionDialog" class="dialog">
+  <form id="sectionForm" method="dialog">
+    <h3 id="sectionDialogTitle">Новый вид работ</h3>
+    <label>Название (например «Внутреннее СКС»)
+      <input type="text" id="sectionNameInput" required maxlength="120">
+    </label>
+    <label>Договорная цена с заказчиком (доходная часть)
+      <input type="number" id="sectionBudget" min="0" step="0.01" required>
     </label>
     <div class="dialog-actions">
-      <button type="button" id="cancelProjectBtn" class="btn">Отмена</button>
+      <button type="button" class="btn dialog-cancel">Отмена</button>
+      <button type="submit" class="btn btn-primary">Сохранить</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Contract dialog -->
+<dialog id="contractDialog" class="dialog">
+  <form id="contractForm" method="dialog">
+    <h3 id="contractDialogTitle">Новый договор</h3>
+    <input type="hidden" id="contractId">
+    <label>Название / подрядчик
+      <input type="text" id="contractName" required maxlength="150">
+    </label>
+    <div class="form-row">
+      <label>Сумма договора
+        <input type="number" id="contractSum" min="0" step="0.01" required>
+      </label>
+      <label>Дата
+        <input type="date" id="contractDate" required>
+      </label>
+    </div>
+    <label>Примечание
+      <input type="text" id="contractNote" maxlength="300">
+    </label>
+    <div class="dialog-actions">
+      <button type="button" class="btn dialog-cancel">Отмена</button>
+      <button type="submit" class="btn btn-primary">Сохранить</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Material dialog -->
+<dialog id="materialDialog" class="dialog">
+  <form id="materialForm" method="dialog">
+    <h3 id="materialDialogTitle">Новый материал</h3>
+    <input type="hidden" id="materialId">
+    <label>Название / поставщик
+      <input type="text" id="materialName" required maxlength="150">
+    </label>
+    <div class="form-row">
+      <label>Количество
+        <input type="text" id="materialQty" maxlength="40" placeholder="напр. 120 м²">
+      </label>
+      <label>Сумма закупки
+        <input type="number" id="materialSum" min="0" step="0.01" required>
+      </label>
+    </div>
+    <label>Дата
+      <input type="date" id="materialDate" required>
+    </label>
+    <div class="dialog-actions">
+      <button type="button" class="btn dialog-cancel">Отмена</button>
+      <button type="submit" class="btn btn-primary">Сохранить</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Progress dialog -->
+<dialog id="progressDialog" class="dialog">
+  <form id="progressForm" method="dialog">
+    <h3 id="progressDialogTitle">Новая запись о выполнении</h3>
+    <input type="hidden" id="progressId">
+    <div class="form-row">
+      <label>Дата
+        <input type="date" id="progressDate" required>
+      </label>
+      <label>Сумма выполненных работ
+        <input type="number" id="progressAmount" min="0" step="0.01" required>
+      </label>
+    </div>
+    <label>Комментарий
+      <input type="text" id="progressNote" maxlength="300" placeholder="напр. Акт №12 — монтаж кабельных лотков">
+    </label>
+    <div class="dialog-actions">
+      <button type="button" class="btn dialog-cancel">Отмена</button>
       <button type="submit" class="btn btn-primary">Сохранить</button>
     </div>
   </form>
