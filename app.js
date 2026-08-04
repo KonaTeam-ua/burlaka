@@ -2,6 +2,7 @@
   "use strict";
 
   const STORAGE_KEY = "pm-construction-v1";
+  const SETTINGS_STORAGE_KEY = "pm-construction-settings-v1";
   const SVG_NS = "http://www.w3.org/2000/svg";
 
   function el(id) { return document.getElementById(id); }
@@ -911,13 +912,18 @@
   const materialSumInput = el("materialSum");
   const materialDateInput = el("materialDate");
 
-  function openMaterialDialog(material) {
-    materialDialogTitle.textContent = material ? "Изменить материал" : "Новый материал";
+  function openMaterialDialog(material, prefill) {
+    const data = material || prefill || null;
+    materialDialogTitle.textContent = material
+      ? "Изменить материал"
+      : prefill
+      ? "Новый материал (распознано по фото — проверьте перед сохранением)"
+      : "Новый материал";
     materialIdInput.value = material ? material.id : "";
-    materialNameInput.value = material ? material.name : "";
-    materialQtyInput.value = material ? material.qty || "" : "";
-    materialSumInput.value = material ? material.sum : "";
-    materialDateInput.value = material ? material.date : "";
+    materialNameInput.value = data ? data.name || "" : "";
+    materialQtyInput.value = data ? data.qty || "" : "";
+    materialSumInput.value = data && data.sum != null ? data.sum : "";
+    materialDateInput.value = data ? data.date || "" : "";
     materialDialog.showModal();
     materialNameInput.focus();
   }
@@ -950,6 +956,157 @@
     saveState();
     render();
   }
+
+  // --- Settings (Anthropic API key for photo recognition) ---
+
+  function loadSettings() {
+    try {
+      const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
+      return raw ? JSON.parse(raw) : {};
+    } catch (e) {
+      return {};
+    }
+  }
+
+  function saveSettings(settings) {
+    localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+  }
+
+  const settingsDialog = el("settingsDialog");
+  const settingsForm = el("settingsForm");
+  const anthropicApiKeyInput = el("anthropicApiKeyInput");
+
+  function openSettingsDialog() {
+    anthropicApiKeyInput.value = loadSettings().anthropicApiKey || "";
+    settingsDialog.showModal();
+    anthropicApiKeyInput.focus();
+  }
+
+  el("settingsBtn").addEventListener("click", openSettingsDialog);
+
+  settingsForm.addEventListener("submit", () => {
+    const settings = loadSettings();
+    settings.anthropicApiKey = anthropicApiKeyInput.value.trim();
+    saveSettings(settings);
+  });
+
+  // --- Photo recognition of materials (Claude Vision) ---
+
+  function fileToBase64(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = reader.result;
+        const base64 = result.slice(result.indexOf(",") + 1);
+        resolve(base64);
+      };
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function recognizeMaterialPhoto(apiKey, base64Data, mediaType) {
+    const schema = {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Название материала/товара (кратко, обобщённо, если позиций несколько)" },
+        supplier: { type: "string", description: "Название поставщика/продавца, если указано в документе" },
+        qty: { type: "string", description: "Количество с единицей измерения, например «120 м2» или «3 упаковки»" },
+        sum: { type: "number", description: "Итоговая сумма к оплате по документу" },
+        date: { type: "string", description: "Дата документа в формате YYYY-MM-DD, если указана" },
+      },
+      required: ["name", "sum"],
+      additionalProperties: false,
+    };
+
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: "claude-opus-5",
+        max_tokens: 1024,
+        output_config: { format: { type: "json_schema", schema } },
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "image", source: { type: "base64", media_type: mediaType, data: base64Data } },
+              {
+                type: "text",
+                text: "Это фото расходной накладной или счёта на строительные материалы. Извлеки: название материала (если позиций несколько — одно обобщённое название), поставщика (если указан), суммарное количество с единицей измерения, итоговую сумму к оплате и дату документа в формате YYYY-MM-DD.",
+              },
+            ],
+          },
+        ],
+      }),
+    });
+
+    if (!response.ok) {
+      let detail = "";
+      try {
+        const errJson = await response.json();
+        detail = errJson.error && errJson.error.message ? errJson.error.message : "";
+      } catch (e) {
+        // ignore
+      }
+      throw new Error(`Ошибка API Anthropic (${response.status})${detail ? ": " + detail : ""}`);
+    }
+
+    const data = await response.json();
+    if (data.stop_reason === "refusal") {
+      throw new Error("Модель отказалась обрабатывать это изображение.");
+    }
+    const textBlock = (data.content || []).find((b) => b.type === "text");
+    if (!textBlock) throw new Error("Пустой ответ модели — не удалось распознать документ.");
+    return JSON.parse(textBlock.text);
+  }
+
+  const materialPhotoInput = el("materialPhotoInput");
+  const photoRecognizeStatus = el("photoRecognizeStatus");
+  const addMaterialByPhotoBtn = el("addMaterialByPhotoBtn");
+
+  addMaterialByPhotoBtn.addEventListener("click", () => {
+    const project = getActiveProject();
+    const section = getActiveSection(project);
+    if (!section) return;
+    const apiKey = loadSettings().anthropicApiKey;
+    if (!apiKey) {
+      alert("Сначала укажите API-ключ Anthropic в настройках (значок ⚙ в левом верхнем углу).");
+      openSettingsDialog();
+      return;
+    }
+    materialPhotoInput.value = "";
+    materialPhotoInput.click();
+  });
+
+  materialPhotoInput.addEventListener("change", async () => {
+    const file = materialPhotoInput.files && materialPhotoInput.files[0];
+    if (!file) return;
+    const apiKey = loadSettings().anthropicApiKey;
+    if (!apiKey) return;
+
+    addMaterialByPhotoBtn.disabled = true;
+    photoRecognizeStatus.hidden = false;
+    try {
+      const base64Data = await fileToBase64(file);
+      const mediaType = file.type || "image/jpeg";
+      const extracted = await recognizeMaterialPhoto(apiKey, base64Data, mediaType);
+      openMaterialDialog(null, extracted);
+    } catch (err) {
+      console.error(err);
+      alert(
+        `Не удалось распознать фото: ${err.message}\n\n` +
+          "Если это ошибка сети/CORS, прямой вызов API Anthropic из браузера может быть недоступен — введите данные вручную кнопкой «+ Материал»."
+      );
+    } finally {
+      addMaterialByPhotoBtn.disabled = false;
+      photoRecognizeStatus.hidden = true;
+    }
+  });
 
   // --- Progress CRUD ---
 

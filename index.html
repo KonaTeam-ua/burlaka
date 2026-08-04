@@ -11,7 +11,10 @@
   <aside class="sidebar">
     <div class="sidebar-header">
       <h1>Проекты</h1>
-      <button id="addProjectBtn" class="icon-btn" title="Новый проект">+</button>
+      <div class="sidebar-header-actions">
+        <button id="settingsBtn" class="icon-btn icon-btn-secondary" title="Настройки распознавания по фото">⚙</button>
+        <button id="addProjectBtn" class="icon-btn" title="Новый проект">+</button>
+      </div>
     </div>
     <ul id="projectList" class="project-list"></ul>
   </aside>
@@ -93,8 +96,13 @@
       <section class="table-card">
         <div class="table-card-header">
           <h3>Закупленные материалы</h3>
-          <button class="btn btn-primary" id="addMaterialBtn">+ Материал</button>
+          <div class="board-actions">
+            <span id="photoRecognizeStatus" class="recognize-status" hidden>Распознаём фото…</span>
+            <button class="btn" id="addMaterialByPhotoBtn">📷 По фото</button>
+            <button class="btn btn-primary" id="addMaterialBtn">+ Материал</button>
+          </div>
         </div>
+        <input type="file" id="materialPhotoInput" accept="image/*" capture="environment" hidden>
         <table class="data-table">
           <thead>
             <tr><th>Название / поставщик</th><th>Кол-во</th><th>Сумма</th><th>Дата</th><th></th></tr>
@@ -225,6 +233,27 @@
     </div>
     <label>Комментарий
       <input type="text" id="progressNote" maxlength="300" placeholder="напр. Акт №12 — монтаж кабельных лотков">
+    </label>
+    <div class="dialog-actions">
+      <button type="button" class="btn dialog-cancel">Отмена</button>
+      <button type="submit" class="btn btn-primary">Сохранить</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Settings dialog -->
+<dialog id="settingsDialog" class="dialog">
+  <form id="settingsForm" method="dialog">
+    <h3>Настройки распознавания по фото</h3>
+    <p class="dialog-hint">
+      Чтобы приложение само считывало данные с фото расходной накладной или счёта,
+      нужен ваш личный API-ключ Anthropic (Claude). Ключ хранится только в
+      браузере на этом устройстве (localStorage) и используется для прямых
+      запросов к api.anthropic.com. Каждое распознавание — небольшой платный
+      запрос к API.
+    </p>
+    <label>API-ключ Anthropic
+      <input type="password" id="anthropicApiKeyInput" placeholder="sk-ant-..." autocomplete="off">
     </label>
     <div class="dialog-actions">
       <button type="button" class="btn dialog-cancel">Отмена</button>
