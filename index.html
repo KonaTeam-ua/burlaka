@@ -272,12 +272,17 @@
     <p class="dialog-hint">
       Чтобы приложение само считывало данные с фото расходной накладной или счёта,
       нужен ваш личный API-ключ Anthropic (Claude). Ключ хранится только в
-      браузере на этом устройстве (localStorage) и используется для прямых
-      запросов к api.anthropic.com. Каждое распознавание — небольшой платный
-      запрос к API.
+      браузере на этом устройстве (localStorage). Браузеры не разрешают сайтам
+      обращаться к api.anthropic.com напрямую, поэтому запрос идёт через
+      небольшой сервер-посредник (прокси) — свой ключ вы всё равно вводите
+      только здесь, и он передаётся только в этот запрос. Каждое распознавание —
+      небольшой платный запрос к API.
     </p>
     <label>API-ключ Anthropic
       <input type="password" id="anthropicApiKeyInput" placeholder="sk-ant-..." autocomplete="off">
+    </label>
+    <label>Адрес сервера-посредника (прокси)
+      <input type="text" id="proxyUrlInput" placeholder="https://ваш-прокси.workers.dev" autocomplete="off">
     </label>
     <div class="dialog-actions">
       <button type="button" class="btn dialog-cancel">Отмена</button>
