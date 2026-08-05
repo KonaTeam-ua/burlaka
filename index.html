@@ -82,8 +82,13 @@
       <section class="table-card">
         <div class="table-card-header">
           <h3>Договоры с субподрядчиками</h3>
-          <button class="btn btn-primary" id="addContractBtn">+ Договор</button>
+          <div class="board-actions">
+            <span id="contractImportStatus" class="recognize-status" hidden>Распознаём файл…</span>
+            <button class="btn" id="addContractByFileBtn">📄 Из файла</button>
+            <button class="btn btn-primary" id="addContractBtn">+ Договор</button>
+          </div>
         </div>
+        <input type="file" id="contractFileInput" accept=".pdf,image/*" hidden>
         <table class="data-table">
           <thead>
             <tr><th>Название / подрядчик</th><th>Сумма</th><th>Дата</th><th>Примечание</th><th></th></tr>
@@ -98,11 +103,14 @@
           <h3>Закупленные материалы</h3>
           <div class="board-actions">
             <span id="photoRecognizeStatus" class="recognize-status" hidden>Распознаём фото…</span>
+            <span id="materialsImportStatus" class="recognize-status" hidden>Разбираем файл…</span>
             <button class="btn" id="addMaterialByPhotoBtn">📷 По фото</button>
+            <button class="btn" id="addMaterialsByFileBtn">📁 Из накладной</button>
             <button class="btn btn-primary" id="addMaterialBtn">+ Материал</button>
           </div>
         </div>
         <input type="file" id="materialPhotoInput" accept="image/*" capture="environment" hidden>
+        <input type="file" id="materialsImportInput" accept=".pdf,.xlsx,.xls,.docx,image/*" hidden>
         <table class="data-table">
           <thead>
             <tr><th>Название / поставщик</th><th>Кол-во</th><th>Сумма</th><th>Дата</th><th></th></tr>
@@ -241,6 +249,22 @@
   </form>
 </dialog>
 
+<!-- Materials import dialog (bulk, from накладная) -->
+<dialog id="materialsImportDialog" class="dialog dialog-wide">
+  <form id="materialsImportForm" method="dialog">
+    <h3>Импорт материалов из файла — проверьте перед добавлением</h3>
+    <label>Дата документа
+      <input type="date" id="materialsImportDate" required>
+    </label>
+    <div id="materialsImportRows" class="import-rows"></div>
+    <button type="button" class="btn" id="addImportRowBtn">+ Строка</button>
+    <div class="dialog-actions">
+      <button type="button" class="btn dialog-cancel">Отмена</button>
+      <button type="submit" class="btn btn-primary">Добавить все (<span id="materialsImportCount">0</span>)</button>
+    </div>
+  </form>
+</dialog>
+
 <!-- Settings dialog -->
 <dialog id="settingsDialog" class="dialog">
   <form id="settingsForm" method="dialog">
@@ -262,6 +286,8 @@
   </form>
 </dialog>
 
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mammoth@1.7.2/mammoth.browser.min.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

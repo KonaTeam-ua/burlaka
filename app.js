@@ -861,13 +861,18 @@
   const contractDateInput = el("contractDate");
   const contractNoteInput = el("contractNote");
 
-  function openContractDialog(contract) {
-    contractDialogTitle.textContent = contract ? "Изменить договор" : "Новый договор";
+  function openContractDialog(contract, prefill) {
+    const data = contract || prefill || null;
+    contractDialogTitle.textContent = contract
+      ? "Изменить договор"
+      : prefill
+      ? "Новый договор (распознано из файла — проверьте перед сохранением)"
+      : "Новый договор";
     contractIdInput.value = contract ? contract.id : "";
-    contractNameInput.value = contract ? contract.name : "";
-    contractSumInput.value = contract ? contract.sum : "";
-    contractDateInput.value = contract ? contract.date : "";
-    contractNoteInput.value = contract ? contract.note || "" : "";
+    contractNameInput.value = data ? data.name || "" : "";
+    contractSumInput.value = data && data.sum != null ? data.sum : "";
+    contractDateInput.value = data ? data.date || "" : "";
+    contractNoteInput.value = data ? data.note || "" : "";
     contractDialog.showModal();
     contractNameInput.focus();
   }
@@ -990,7 +995,7 @@
     saveSettings(settings);
   });
 
-  // --- Photo recognition of materials (Claude Vision) ---
+  // --- File extraction pipeline (Claude Vision/Documents + client-side xlsx/docx parsing) ---
 
   function fileToBase64(file) {
     return new Promise((resolve, reject) => {
@@ -1005,20 +1010,72 @@
     });
   }
 
-  async function recognizeMaterialPhoto(apiKey, base64Data, mediaType) {
-    const schema = {
-      type: "object",
-      properties: {
-        name: { type: "string", description: "Название материала/товара (кратко, обобщённо, если позиций несколько)" },
-        supplier: { type: "string", description: "Название поставщика/продавца, если указано в документе" },
-        qty: { type: "string", description: "Количество с единицей измерения, например «120 м2» или «3 упаковки»" },
-        sum: { type: "number", description: "Итоговая сумма к оплате по документу" },
-        date: { type: "string", description: "Дата документа в формате YYYY-MM-DD, если указана" },
-      },
-      required: ["name", "sum"],
-      additionalProperties: false,
-    };
+  function fileToArrayBuffer(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(reader.error);
+      reader.readAsArrayBuffer(file);
+    });
+  }
 
+  const MAX_EXTRACT_TEXT_CHARS = 20000;
+
+  async function extractFileContent(file) {
+    const name = (file.name || "").toLowerCase();
+    const type = file.type || "";
+
+    if (type === "application/pdf" || name.endsWith(".pdf")) {
+      const base64 = await fileToBase64(file);
+      return { kind: "pdf", base64 };
+    }
+
+    if (type.startsWith("image/") || /\.(png|jpe?g|webp|gif)$/.test(name)) {
+      const base64 = await fileToBase64(file);
+      return { kind: "image", base64, mediaType: type || "image/jpeg" };
+    }
+
+    if (name.endsWith(".xlsx") || name.endsWith(".xls")) {
+      if (!window.XLSX) throw new Error("Не удалось загрузить библиотеку для чтения Excel-файлов (нужен интернет).");
+      const buffer = await fileToArrayBuffer(file);
+      const workbook = XLSX.read(buffer, { type: "array" });
+      const csvParts = workbook.SheetNames.map(
+        (sheetName) => `# Лист: ${sheetName}\n${XLSX.utils.sheet_to_csv(workbook.Sheets[sheetName])}`
+      );
+      return { kind: "text", text: csvParts.join("\n\n") };
+    }
+
+    if (name.endsWith(".docx")) {
+      if (!window.mammoth) throw new Error("Не удалось загрузить библиотеку для чтения Word-файлов (нужен интернет).");
+      const buffer = await fileToArrayBuffer(file);
+      const result = await mammoth.extractRawText({ arrayBuffer: buffer });
+      return { kind: "text", text: result.value };
+    }
+
+    throw new Error("Неподдерживаемый формат файла. Поддерживаются: PDF, изображения, Excel (.xlsx/.xls), Word (.docx).");
+  }
+
+  function buildContentBlocks(extracted, instructionText) {
+    if (extracted.kind === "pdf") {
+      return [
+        { type: "document", source: { type: "base64", media_type: "application/pdf", data: extracted.base64 } },
+        { type: "text", text: instructionText },
+      ];
+    }
+    if (extracted.kind === "image") {
+      return [
+        { type: "image", source: { type: "base64", media_type: extracted.mediaType, data: extracted.base64 } },
+        { type: "text", text: instructionText },
+      ];
+    }
+    let text = extracted.text || "";
+    if (text.length > MAX_EXTRACT_TEXT_CHARS) {
+      text = text.slice(0, MAX_EXTRACT_TEXT_CHARS) + "\n...(текст обрезан из-за размера)";
+    }
+    return [{ type: "text", text: `${instructionText}\n\n--- Содержимое файла ---\n${text}` }];
+  }
+
+  async function callClaudeExtract(apiKey, contentBlocks, schema, maxTokens) {
     const response = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
@@ -1028,20 +1085,9 @@
       },
       body: JSON.stringify({
         model: "claude-opus-5",
-        max_tokens: 1024,
+        max_tokens: maxTokens || 1024,
         output_config: { format: { type: "json_schema", schema } },
-        messages: [
-          {
-            role: "user",
-            content: [
-              { type: "image", source: { type: "base64", media_type: mediaType, data: base64Data } },
-              {
-                type: "text",
-                text: "Это фото расходной накладной или счёта на строительные материалы. Извлеки: название материала (если позиций несколько — одно обобщённое название), поставщика (если указан), суммарное количество с единицей измерения, итоговую сумму к оплате и дату документа в формате YYYY-MM-DD.",
-              },
-            ],
-          },
-        ],
+        messages: [{ role: "user", content: contentBlocks }],
       }),
     });
 
@@ -1058,12 +1104,24 @@
 
     const data = await response.json();
     if (data.stop_reason === "refusal") {
-      throw new Error("Модель отказалась обрабатывать это изображение.");
+      throw new Error("Модель отказалась обрабатывать этот файл.");
     }
     const textBlock = (data.content || []).find((b) => b.type === "text");
     if (!textBlock) throw new Error("Пустой ответ модели — не удалось распознать документ.");
     return JSON.parse(textBlock.text);
   }
+
+  function requireApiKeyOrOpenSettings() {
+    const apiKey = loadSettings().anthropicApiKey;
+    if (!apiKey) {
+      alert("Сначала укажите API-ключ Anthropic в настройках (значок ⚙ в левом верхнем углу).");
+      openSettingsDialog();
+      return null;
+    }
+    return apiKey;
+  }
+
+  // --- Photo recognition of a single material (Claude Vision) ---
 
   const materialPhotoInput = el("materialPhotoInput");
   const photoRecognizeStatus = el("photoRecognizeStatus");
@@ -1073,12 +1131,7 @@
     const project = getActiveProject();
     const section = getActiveSection(project);
     if (!section) return;
-    const apiKey = loadSettings().anthropicApiKey;
-    if (!apiKey) {
-      alert("Сначала укажите API-ключ Anthropic в настройках (значок ⚙ в левом верхнем углу).");
-      openSettingsDialog();
-      return;
-    }
+    if (!requireApiKeyOrOpenSettings()) return;
     materialPhotoInput.value = "";
     materialPhotoInput.click();
   });
@@ -1092,10 +1145,25 @@
     addMaterialByPhotoBtn.disabled = true;
     photoRecognizeStatus.hidden = false;
     try {
-      const base64Data = await fileToBase64(file);
-      const mediaType = file.type || "image/jpeg";
-      const extracted = await recognizeMaterialPhoto(apiKey, base64Data, mediaType);
-      openMaterialDialog(null, extracted);
+      const extracted = await extractFileContent(file);
+      const blocks = buildContentBlocks(
+        extracted,
+        "Это фото расходной накладной или счёта на строительные материалы. Извлеки: название материала (если позиций несколько — одно обобщённое название), поставщика (если указан), суммарное количество с единицей измерения, итоговую сумму к оплате и дату документа в формате YYYY-MM-DD."
+      );
+      const schema = {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "Название материала/товара (кратко, обобщённо, если позиций несколько)" },
+          supplier: { type: "string", description: "Название поставщика/продавца, если указано в документе" },
+          qty: { type: "string", description: "Количество с единицей измерения, например «120 м2» или «3 упаковки»" },
+          sum: { type: "number", description: "Итоговая сумма к оплате по документу" },
+          date: { type: "string", description: "Дата документа в формате YYYY-MM-DD, если указана" },
+        },
+        required: ["name", "sum"],
+        additionalProperties: false,
+      };
+      const result = await callClaudeExtract(apiKey, blocks, schema, 1024);
+      openMaterialDialog(null, result);
     } catch (err) {
       console.error(err);
       alert(
@@ -1105,6 +1173,235 @@
     } finally {
       addMaterialByPhotoBtn.disabled = false;
       photoRecognizeStatus.hidden = true;
+    }
+  });
+
+  // --- Contract recognition from an uploaded file ---
+
+  const contractFileInput = el("contractFileInput");
+  const contractImportStatus = el("contractImportStatus");
+  const addContractByFileBtn = el("addContractByFileBtn");
+
+  addContractByFileBtn.addEventListener("click", () => {
+    const project = getActiveProject();
+    const section = getActiveSection(project);
+    if (!section) return;
+    if (!requireApiKeyOrOpenSettings()) return;
+    contractFileInput.value = "";
+    contractFileInput.click();
+  });
+
+  contractFileInput.addEventListener("change", async () => {
+    const file = contractFileInput.files && contractFileInput.files[0];
+    if (!file) return;
+    const apiKey = loadSettings().anthropicApiKey;
+    if (!apiKey) return;
+
+    addContractByFileBtn.disabled = true;
+    contractImportStatus.hidden = false;
+    try {
+      const extracted = await extractFileContent(file);
+      const blocks = buildContentBlocks(
+        extracted,
+        "Это скан или файл договора с субподрядчиком на строительные работы. Извлеки: название субподрядчика (сторона-исполнитель по договору), итоговую договорную сумму, дату договора в формате YYYY-MM-DD (если есть) и краткую суть/предмет договора одной фразой."
+      );
+      const schema = {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "Название субподрядчика (стороны-исполнителя по договору)" },
+          sum: { type: "number", description: "Итоговая договорная сумма" },
+          date: { type: "string", description: "Дата договора в формате YYYY-MM-DD, если указана" },
+          note: { type: "string", description: "Краткая суть/предмет договора одной фразой" },
+        },
+        required: ["name", "sum"],
+        additionalProperties: false,
+      };
+      const result = await callClaudeExtract(apiKey, blocks, schema, 1024);
+      openContractDialog(null, result);
+    } catch (err) {
+      console.error(err);
+      alert(
+        `Не удалось распознать файл договора: ${err.message}\n\n` +
+          "Введите данные вручную кнопкой «+ Договор»."
+      );
+    } finally {
+      addContractByFileBtn.disabled = false;
+      contractImportStatus.hidden = true;
+    }
+  });
+
+  // --- Bulk materials import from an uploaded накладная (xlsx/docx/pdf/image) ---
+
+  const materialsImportInput = el("materialsImportInput");
+  const materialsImportStatus = el("materialsImportStatus");
+  const addMaterialsByFileBtn = el("addMaterialsByFileBtn");
+  const materialsImportDialog = el("materialsImportDialog");
+  const materialsImportForm = el("materialsImportForm");
+  const materialsImportDateInput = el("materialsImportDate");
+  const materialsImportRowsEl = el("materialsImportRows");
+  const addImportRowBtn = el("addImportRowBtn");
+  const materialsImportCountEl = el("materialsImportCount");
+
+  let importRows = [];
+
+  function renderImportRows() {
+    materialsImportRowsEl.innerHTML = "";
+    importRows.forEach((row, idx) => {
+      const rowEl = document.createElement("div");
+      rowEl.className = "import-row";
+
+      const nameInput = document.createElement("input");
+      nameInput.type = "text";
+      nameInput.placeholder = "Название материала";
+      nameInput.value = row.name;
+      nameInput.addEventListener("input", () => {
+        row.name = nameInput.value;
+        updateImportCount();
+      });
+
+      const qtyInput = document.createElement("input");
+      qtyInput.type = "text";
+      qtyInput.placeholder = "Кол-во";
+      qtyInput.value = row.qty;
+      qtyInput.addEventListener("input", () => {
+        row.qty = qtyInput.value;
+      });
+
+      const sumInput = document.createElement("input");
+      sumInput.type = "number";
+      sumInput.min = "0";
+      sumInput.step = "0.01";
+      sumInput.placeholder = "Сумма";
+      sumInput.value = row.sum;
+      sumInput.addEventListener("input", () => {
+        row.sum = sumInput.value;
+        updateImportCount();
+      });
+
+      const delBtn = document.createElement("button");
+      delBtn.type = "button";
+      delBtn.className = "import-row-delete";
+      delBtn.textContent = "×";
+      delBtn.title = "Удалить строку";
+      delBtn.addEventListener("click", () => {
+        importRows.splice(idx, 1);
+        renderImportRows();
+      });
+
+      rowEl.appendChild(nameInput);
+      rowEl.appendChild(qtyInput);
+      rowEl.appendChild(sumInput);
+      rowEl.appendChild(delBtn);
+      materialsImportRowsEl.appendChild(rowEl);
+    });
+    updateImportCount();
+  }
+
+  function updateImportCount() {
+    const valid = importRows.filter((r) => r.name.trim() && r.sum !== "" && !Number.isNaN(Number(r.sum)));
+    materialsImportCountEl.textContent = valid.length;
+  }
+
+  function openMaterialsImportDialog(extracted) {
+    importRows = (extracted.materials || []).map((m) => ({
+      name: m.name || "",
+      qty: m.qty || "",
+      sum: m.sum != null ? String(m.sum) : "",
+    }));
+    if (!importRows.length) importRows.push({ name: "", qty: "", sum: "" });
+    materialsImportDateInput.value = /^\d{4}-\d{2}-\d{2}$/.test(extracted.date || "")
+      ? extracted.date
+      : new Date().toISOString().slice(0, 10);
+    renderImportRows();
+    materialsImportDialog.showModal();
+  }
+
+  addImportRowBtn.addEventListener("click", () => {
+    importRows.push({ name: "", qty: "", sum: "" });
+    renderImportRows();
+    const rows = materialsImportRowsEl.querySelectorAll(".import-row");
+    const last = rows[rows.length - 1];
+    if (last) last.querySelector("input").focus();
+  });
+
+  addMaterialsByFileBtn.addEventListener("click", () => {
+    const project = getActiveProject();
+    const section = getActiveSection(project);
+    if (!section) return;
+    if (!requireApiKeyOrOpenSettings()) return;
+    materialsImportInput.value = "";
+    materialsImportInput.click();
+  });
+
+  materialsImportInput.addEventListener("change", async () => {
+    const file = materialsImportInput.files && materialsImportInput.files[0];
+    if (!file) return;
+    const apiKey = loadSettings().anthropicApiKey;
+    if (!apiKey) return;
+
+    addMaterialsByFileBtn.disabled = true;
+    materialsImportStatus.hidden = false;
+    try {
+      const extracted = await extractFileContent(file);
+      const blocks = buildContentBlocks(
+        extracted,
+        "Это расходная накладная, счёт или спецификация на строительные материалы, возможно с несколькими позициями. Извлеки список позиций: для каждой — название материала, количество с единицей измерения, сумма по позиции. Также извлеки общую дату документа в формате YYYY-MM-DD, если она есть."
+      );
+      const schema = {
+        type: "object",
+        properties: {
+          date: { type: "string", description: "Дата документа в формате YYYY-MM-DD, если указана" },
+          materials: {
+            type: "array",
+            description: "Список позиций материалов из документа",
+            items: {
+              type: "object",
+              properties: {
+                name: { type: "string", description: "Название материала" },
+                qty: { type: "string", description: "Количество с единицей измерения" },
+                sum: { type: "number", description: "Сумма по позиции" },
+              },
+              required: ["name", "sum"],
+              additionalProperties: false,
+            },
+          },
+        },
+        required: ["materials"],
+        additionalProperties: false,
+      };
+      const result = await callClaudeExtract(apiKey, blocks, schema, 4096);
+      if (!result.materials || !result.materials.length) {
+        throw new Error("В файле не найдено ни одной позиции материалов.");
+      }
+      openMaterialsImportDialog(result);
+    } catch (err) {
+      console.error(err);
+      alert(
+        `Не удалось разобрать файл: ${err.message}\n\n` +
+          "Введите материалы вручную кнопкой «+ Материал»."
+      );
+    } finally {
+      addMaterialsByFileBtn.disabled = false;
+      materialsImportStatus.hidden = true;
+    }
+  });
+
+  materialsImportForm.addEventListener("submit", () => {
+    const project = getActiveProject();
+    const section = getActiveSection(project);
+    if (!section) return;
+    const sharedDate = materialsImportDateInput.value || new Date().toISOString().slice(0, 10);
+    let added = 0;
+    importRows.forEach((row) => {
+      const name = row.name.trim();
+      const sumVal = Number(row.sum);
+      if (!name || Number.isNaN(sumVal) || sumVal < 0) return;
+      section.materials.push({ id: uid(), name, qty: (row.qty || "").trim(), sum: sumVal, date: sharedDate });
+      added += 1;
+    });
+    if (added > 0) {
+      saveState();
+      render();
     }
   });
 

@@ -522,6 +522,40 @@ body {
 
 .form-row label { flex: 1; }
 
+.dialog-wide {
+  width: 640px;
+}
+
+.import-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+  max-height: 340px;
+  overflow-y: auto;
+}
+
+.import-row {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.import-row input { margin-top: 0; }
+
+.import-row-delete {
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px 8px;
+}
+
+.import-row-delete:hover { color: var(--critical); }
+
 .dialog-actions {
   display: flex;
   justify-content: flex-end;
