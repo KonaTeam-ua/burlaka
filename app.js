@@ -980,9 +980,12 @@
   const settingsDialog = el("settingsDialog");
   const settingsForm = el("settingsForm");
   const anthropicApiKeyInput = el("anthropicApiKeyInput");
+  const proxyUrlInput = el("proxyUrlInput");
 
   function openSettingsDialog() {
-    anthropicApiKeyInput.value = loadSettings().anthropicApiKey || "";
+    const settings = loadSettings();
+    anthropicApiKeyInput.value = settings.anthropicApiKey || "";
+    proxyUrlInput.value = settings.proxyUrl || "";
     settingsDialog.showModal();
     anthropicApiKeyInput.focus();
   }
@@ -992,6 +995,7 @@
   settingsForm.addEventListener("submit", () => {
     const settings = loadSettings();
     settings.anthropicApiKey = anthropicApiKeyInput.value.trim();
+    settings.proxyUrl = proxyUrlInput.value.trim().replace(/\/+$/, "");
     saveSettings(settings);
   });
 
@@ -1076,7 +1080,15 @@
   }
 
   async function callClaudeExtract(apiKey, contentBlocks, schema, maxTokens) {
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
+    const proxyUrl = (loadSettings().proxyUrl || "").trim();
+    if (!proxyUrl) {
+      throw new Error(
+        "Не указан адрес сервера-посредника (прокси) в настройках. Браузер не может " +
+          "обращаться к api.anthropic.com напрямую — укажите адрес прокси в настройках (значок ⚙)."
+      );
+    }
+
+    const response = await fetch(`${proxyUrl}/v1/messages`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -1112,13 +1124,21 @@
   }
 
   function requireApiKeyOrOpenSettings() {
-    const apiKey = loadSettings().anthropicApiKey;
-    if (!apiKey) {
+    const settings = loadSettings();
+    if (!settings.anthropicApiKey) {
       alert("Сначала укажите API-ключ Anthropic в настройках (значок ⚙ в левом верхнем углу).");
       openSettingsDialog();
       return null;
     }
-    return apiKey;
+    if (!settings.proxyUrl) {
+      alert(
+        "Сначала укажите адрес сервера-посредника (прокси) в настройках (значок ⚙ в левом верхнем углу). " +
+          "Он нужен, потому что браузер не может обращаться к api.anthropic.com напрямую."
+      );
+      openSettingsDialog();
+      return null;
+    }
+    return settings.anthropicApiKey;
   }
 
   // --- Photo recognition of a single material (Claude Vision) ---
