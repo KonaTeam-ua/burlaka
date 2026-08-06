@@ -58,12 +58,37 @@
 
   // --- State ---
 
+  function migrateMaterial(m) {
+    if (m.qtyValue === undefined) {
+      const raw = (m.qty || "").toString().trim();
+      const match = raw.match(/^(\d+(?:[.,]\d+)?)\s*(.*)$/);
+      if (match) {
+        const num = parseFloat(match[1].replace(",", "."));
+        m.qtyValue = Number.isFinite(num) ? num : null;
+        m.qtyUnit = (match[2] || "").trim();
+      } else {
+        m.qtyValue = null;
+        m.qtyUnit = raw;
+      }
+    }
+    if (m.qtyUnit === undefined) m.qtyUnit = "";
+    return m;
+  }
+
   function loadState() {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (!raw) return { projects: [], activeProjectId: null, activeView: "overview", activeSectionId: null };
       const parsed = JSON.parse(raw);
       if (!Array.isArray(parsed.projects)) throw new Error("bad shape");
+      parsed.projects.forEach((project) => {
+        (project.sections || []).forEach((section) => {
+          (section.materials || []).forEach(migrateMaterial);
+          (section.progress || []).forEach((p) => {
+            if (!Array.isArray(p.materials)) p.materials = [];
+          });
+        });
+      });
       return parsed;
     } catch (e) {
       console.error("Не удалось прочитать сохранённые данные", e);
@@ -90,6 +115,68 @@
   }
 
   // --- Computations ---
+
+  function formatQty(value, unit) {
+    if (value == null || value === "" || Number.isNaN(Number(value))) {
+      return unit ? unit : "—";
+    }
+    const n = Number(value);
+    const formatted = Number.isInteger(n) ? String(n) : String(round2(n));
+    return unit ? `${formatted} ${unit}` : formatted;
+  }
+
+  function materialUnitPrice(material) {
+    const qty = Number(material.qtyValue);
+    if (!qty || qty <= 0) return null;
+    return (Number(material.sum) || 0) / qty;
+  }
+
+  function computeMaterialUsage(section) {
+    const usage = {};
+    section.progress.forEach((p) => {
+      (p.materials || []).forEach((u) => {
+        usage[u.materialId] = (usage[u.materialId] || 0) + (Number(u.qty) || 0);
+      });
+    });
+    return usage;
+  }
+
+  function computeRowCost(section, row) {
+    if (!row.materialId) return null;
+    const material = section ? section.materials.find((m) => m.id === row.materialId) : null;
+    const price = material ? materialUnitPrice(material) : null;
+    if (price == null) return null;
+    return round2((Number(row.qty) || 0) * price);
+  }
+
+  function describeProgressMaterials(section, entry) {
+    const items = entry.materials || [];
+    if (!items.length) return "—";
+    return items
+      .map((u) => {
+        const material = section.materials.find((m) => m.id === u.materialId);
+        const name = material ? material.name : "материал удалён";
+        const unit = material ? material.qtyUnit : "";
+        const qtyText = formatQty(u.qty, unit);
+        const price = material ? materialUnitPrice(material) : null;
+        const costText = price != null ? ` (${formatMoney(round2((Number(u.qty) || 0) * price))})` : "";
+        return `${name}: ${qtyText}${costText}`;
+      })
+      .join("; ");
+  }
+
+  function matchMaterialByName(section, name) {
+    if (!name || !section) return null;
+    const needle = name.trim().toLowerCase();
+    if (!needle) return null;
+    const exact = section.materials.find((m) => m.name.trim().toLowerCase() === needle);
+    if (exact) return exact.id;
+    const partial = section.materials.find((m) => {
+      const hay = m.name.trim().toLowerCase();
+      return hay.includes(needle) || needle.includes(hay);
+    });
+    return partial ? partial.id : null;
+  }
 
   function computeSectionStats(section) {
     const spent = round2(sum(section.contracts, "sum") + sum(section.materials, "sum"));
@@ -403,15 +490,23 @@
   function renderMaterials(section) {
     materialsBodyEl.innerHTML = "";
     if (!section.materials.length) {
-      renderEmptyRow(materialsBodyEl, 5, "Материалы пока не закупались");
+      renderEmptyRow(materialsBodyEl, 6, "Материалы пока не закупались");
     } else {
+      const usage = computeMaterialUsage(section);
       section.materials
         .slice()
         .sort((a, b) => a.date.localeCompare(b.date))
         .forEach((m) => {
           const tr = document.createElement("tr");
           appendCell(tr, m.name);
-          appendCell(tr, m.qty || "—");
+          appendCell(tr, formatQty(m.qtyValue, m.qtyUnit));
+          const used = usage[m.id] || 0;
+          const remaining = m.qtyValue != null ? round2(m.qtyValue - used) : null;
+          appendCell(
+            tr,
+            remaining != null ? formatQty(remaining, m.qtyUnit) : "—",
+            remaining != null && remaining < 0 ? "bad" : undefined
+          );
           appendCell(tr, formatMoney(m.sum));
           appendCell(tr, formatDate(m.date));
           tr.appendChild(rowActions(
@@ -427,7 +522,7 @@
   function renderProgress(section) {
     progressBodyEl.innerHTML = "";
     if (!section.progress.length) {
-      renderEmptyRow(progressBodyEl, 5, "Выполнение работ ещё не отмечалось");
+      renderEmptyRow(progressBodyEl, 6, "Выполнение работ ещё не отмечалось");
     } else {
       let running = 0;
       section.progress
@@ -439,6 +534,7 @@
           appendCell(tr, formatDate(p.date));
           appendCell(tr, formatMoney(p.amount));
           appendCell(tr, formatMoney(running));
+          appendCell(tr, describeProgressMaterials(section, p));
           appendCell(tr, p.note || "");
           tr.appendChild(rowActions(
             () => openProgressDialog(p),
@@ -913,7 +1009,8 @@
   const materialDialogTitle = el("materialDialogTitle");
   const materialIdInput = el("materialId");
   const materialNameInput = el("materialName");
-  const materialQtyInput = el("materialQty");
+  const materialQtyValueInput = el("materialQtyValue");
+  const materialQtyUnitInput = el("materialQtyUnit");
   const materialSumInput = el("materialSum");
   const materialDateInput = el("materialDate");
 
@@ -922,11 +1019,12 @@
     materialDialogTitle.textContent = material
       ? "Изменить материал"
       : prefill
-      ? "Новый материал (распознано по фото — проверьте перед сохранением)"
+      ? "Новый материал (распознано — проверьте перед сохранением)"
       : "Новый материал";
     materialIdInput.value = material ? material.id : "";
     materialNameInput.value = data ? data.name || "" : "";
-    materialQtyInput.value = data ? data.qty || "" : "";
+    materialQtyValueInput.value = data && data.qtyValue != null ? data.qtyValue : "";
+    materialQtyUnitInput.value = data ? data.qtyUnit || "" : "";
     materialSumInput.value = data && data.sum != null ? data.sum : "";
     materialDateInput.value = data ? data.date || "" : "";
     materialDialog.showModal();
@@ -943,13 +1041,22 @@
     const sumVal = Number(materialSumInput.value);
     const date = materialDateInput.value;
     if (!name || Number.isNaN(sumVal) || sumVal < 0 || !date) return;
-    const qty = materialQtyInput.value.trim();
+    const qtyValueRaw = materialQtyValueInput.value.trim();
+    const qtyValue = qtyValueRaw === "" ? null : Number(qtyValueRaw);
+    const qtyUnit = materialQtyUnitInput.value.trim();
 
     if (materialIdInput.value) {
       const m = section.materials.find((x) => x.id === materialIdInput.value);
-      if (m) Object.assign(m, { name, qty, sum: sumVal, date });
+      if (m) Object.assign(m, { name, qtyValue: Number.isNaN(qtyValue) ? null : qtyValue, qtyUnit, sum: sumVal, date });
     } else {
-      section.materials.push({ id: uid(), name, qty, sum: sumVal, date });
+      section.materials.push({
+        id: uid(),
+        name,
+        qtyValue: Number.isNaN(qtyValue) ? null : qtyValue,
+        qtyUnit,
+        sum: sumVal,
+        date,
+      });
     }
     saveState();
     render();
@@ -1168,14 +1275,15 @@
       const extracted = await extractFileContent(file);
       const blocks = buildContentBlocks(
         extracted,
-        "Это фото расходной накладной или счёта на строительные материалы. Извлеки: название материала (если позиций несколько — одно обобщённое название), поставщика (если указан), суммарное количество с единицей измерения, итоговую сумму к оплате и дату документа в формате YYYY-MM-DD."
+        "Это фото расходной накладной или счёта на строительные материалы. Извлеки: название материала (если позиций несколько — одно обобщённое название), поставщика (если указан), суммарное количество числом и отдельно единицу измерения, итоговую сумму к оплате и дату документа в формате YYYY-MM-DD."
       );
       const schema = {
         type: "object",
         properties: {
           name: { type: "string", description: "Название материала/товара (кратко, обобщённо, если позиций несколько)" },
           supplier: { type: "string", description: "Название поставщика/продавца, если указано в документе" },
-          qty: { type: "string", description: "Количество с единицей измерения, например «120 м2» или «3 упаковки»" },
+          qtyValue: { type: "number", description: "Суммарное количество материала числом, без единицы измерения" },
+          qtyUnit: { type: "string", description: "Единица измерения количества, например «м2», «шт», «мешок»" },
           sum: { type: "number", description: "Итоговая сумма к оплате по документу" },
           date: { type: "string", description: "Дата документа в формате YYYY-MM-DD, если указана" },
         },
@@ -1268,7 +1376,7 @@
     materialsImportRowsEl.innerHTML = "";
     importRows.forEach((row, idx) => {
       const rowEl = document.createElement("div");
-      rowEl.className = "import-row";
+      rowEl.className = "import-row-materials";
 
       const nameInput = document.createElement("input");
       nameInput.type = "text";
@@ -1279,12 +1387,22 @@
         updateImportCount();
       });
 
-      const qtyInput = document.createElement("input");
-      qtyInput.type = "text";
-      qtyInput.placeholder = "Кол-во";
-      qtyInput.value = row.qty;
-      qtyInput.addEventListener("input", () => {
-        row.qty = qtyInput.value;
+      const qtyValueInput = document.createElement("input");
+      qtyValueInput.type = "number";
+      qtyValueInput.min = "0";
+      qtyValueInput.step = "any";
+      qtyValueInput.placeholder = "Кол-во";
+      qtyValueInput.value = row.qtyValue;
+      qtyValueInput.addEventListener("input", () => {
+        row.qtyValue = qtyValueInput.value;
+      });
+
+      const qtyUnitInput = document.createElement("input");
+      qtyUnitInput.type = "text";
+      qtyUnitInput.placeholder = "Ед. изм.";
+      qtyUnitInput.value = row.qtyUnit;
+      qtyUnitInput.addEventListener("input", () => {
+        row.qtyUnit = qtyUnitInput.value;
       });
 
       const sumInput = document.createElement("input");
@@ -1309,7 +1427,8 @@
       });
 
       rowEl.appendChild(nameInput);
-      rowEl.appendChild(qtyInput);
+      rowEl.appendChild(qtyValueInput);
+      rowEl.appendChild(qtyUnitInput);
       rowEl.appendChild(sumInput);
       rowEl.appendChild(delBtn);
       materialsImportRowsEl.appendChild(rowEl);
@@ -1325,10 +1444,11 @@
   function openMaterialsImportDialog(extracted) {
     importRows = (extracted.materials || []).map((m) => ({
       name: m.name || "",
-      qty: m.qty || "",
+      qtyValue: m.qtyValue != null ? String(m.qtyValue) : "",
+      qtyUnit: m.qtyUnit || "",
       sum: m.sum != null ? String(m.sum) : "",
     }));
-    if (!importRows.length) importRows.push({ name: "", qty: "", sum: "" });
+    if (!importRows.length) importRows.push({ name: "", qtyValue: "", qtyUnit: "", sum: "" });
     materialsImportDateInput.value = /^\d{4}-\d{2}-\d{2}$/.test(extracted.date || "")
       ? extracted.date
       : new Date().toISOString().slice(0, 10);
@@ -1337,9 +1457,9 @@
   }
 
   addImportRowBtn.addEventListener("click", () => {
-    importRows.push({ name: "", qty: "", sum: "" });
+    importRows.push({ name: "", qtyValue: "", qtyUnit: "", sum: "" });
     renderImportRows();
-    const rows = materialsImportRowsEl.querySelectorAll(".import-row");
+    const rows = materialsImportRowsEl.querySelectorAll(".import-row-materials");
     const last = rows[rows.length - 1];
     if (last) last.querySelector("input").focus();
   });
@@ -1365,7 +1485,7 @@
       const extracted = await extractFileContent(file);
       const blocks = buildContentBlocks(
         extracted,
-        "Это расходная накладная, счёт или спецификация на строительные материалы, возможно с несколькими позициями. Извлеки список позиций: для каждой — название материала, количество с единицей измерения, сумма по позиции. Также извлеки общую дату документа в формате YYYY-MM-DD, если она есть."
+        "Это расходная накладная, счёт или спецификация на строительные материалы, возможно с несколькими позициями. Извлеки список позиций: для каждой — название материала, количество числом и отдельно единицу измерения, сумма по позиции. Также извлеки общую дату документа в формате YYYY-MM-DD, если она есть."
       );
       const schema = {
         type: "object",
@@ -1378,7 +1498,8 @@
               type: "object",
               properties: {
                 name: { type: "string", description: "Название материала" },
-                qty: { type: "string", description: "Количество с единицей измерения" },
+                qtyValue: { type: "number", description: "Количество числом, без единицы измерения" },
+                qtyUnit: { type: "string", description: "Единица измерения, например «м2», «шт», «мешок»" },
                 sum: { type: "number", description: "Сумма по позиции" },
               },
               required: ["name", "sum"],
@@ -1416,7 +1537,16 @@
       const name = row.name.trim();
       const sumVal = Number(row.sum);
       if (!name || Number.isNaN(sumVal) || sumVal < 0) return;
-      section.materials.push({ id: uid(), name, qty: (row.qty || "").trim(), sum: sumVal, date: sharedDate });
+      const qtyValueRaw = (row.qtyValue || "").toString().trim();
+      const qtyValue = qtyValueRaw === "" ? null : Number(qtyValueRaw);
+      section.materials.push({
+        id: uid(),
+        name,
+        qtyValue: Number.isNaN(qtyValue) ? null : qtyValue,
+        qtyUnit: (row.qtyUnit || "").trim(),
+        sum: sumVal,
+        date: sharedDate,
+      });
       added += 1;
     });
     if (added > 0) {
@@ -1434,18 +1564,141 @@
   const progressDateInput = el("progressDate");
   const progressAmountInput = el("progressAmount");
   const progressNoteInput = el("progressNote");
+  const progressMaterialRowsEl = el("progressMaterialRows");
+  const addProgressMaterialRowBtn = el("addProgressMaterialRowBtn");
+  const progressMaterialsCostEl = el("progressMaterialsCost");
 
-  function openProgressDialog(entry) {
-    progressDialogTitle.textContent = entry ? "Изменить запись" : "Новая запись о выполнении";
+  let progressMaterialRows = [];
+
+  function renderProgressMaterialRows() {
+    const section = getActiveSection(getActiveProject());
+    progressMaterialRowsEl.innerHTML = "";
+    const usage = section ? computeMaterialUsage(section) : {};
+
+    progressMaterialRows.forEach((row, idx) => {
+      const rowEl = document.createElement("div");
+      rowEl.className = "import-row";
+
+      const select = document.createElement("select");
+      const emptyOpt = document.createElement("option");
+      emptyOpt.value = "";
+      emptyOpt.textContent = row.unmatchedName
+        ? `Не найдено: «${row.unmatchedName}» — выберите вручную`
+        : "Выберите материал";
+      select.appendChild(emptyOpt);
+      (section ? section.materials : []).forEach((m) => {
+        const opt = document.createElement("option");
+        opt.value = m.id;
+        const used = usage[m.id] || 0;
+        const remaining = m.qtyValue != null ? round2(m.qtyValue - used) : null;
+        opt.textContent = remaining != null ? `${m.name} (остаток: ${formatQty(remaining, m.qtyUnit)})` : m.name;
+        select.appendChild(opt);
+      });
+      select.value = row.materialId || "";
+
+      const qtyInput = document.createElement("input");
+      qtyInput.type = "number";
+      qtyInput.min = "0";
+      qtyInput.step = "any";
+      qtyInput.placeholder = "Кол-во";
+      qtyInput.value = row.qty;
+
+      const costInput = document.createElement("input");
+      costInput.type = "text";
+      costInput.readOnly = true;
+      costInput.tabIndex = -1;
+
+      function refreshCost() {
+        const cost = computeRowCost(section, row);
+        costInput.value = cost != null ? formatMoney(cost) : "—";
+        updateProgressMaterialsTotal();
+      }
+
+      select.addEventListener("change", () => {
+        row.materialId = select.value;
+        row.unmatchedName = "";
+        refreshCost();
+      });
+      qtyInput.addEventListener("input", () => {
+        row.qty = qtyInput.value;
+        refreshCost();
+      });
+
+      refreshCost();
+
+      const delBtn = document.createElement("button");
+      delBtn.type = "button";
+      delBtn.className = "import-row-delete";
+      delBtn.textContent = "×";
+      delBtn.title = "Удалить строку";
+      delBtn.addEventListener("click", () => {
+        progressMaterialRows.splice(idx, 1);
+        renderProgressMaterialRows();
+      });
+
+      rowEl.appendChild(select);
+      rowEl.appendChild(qtyInput);
+      rowEl.appendChild(costInput);
+      rowEl.appendChild(delBtn);
+      progressMaterialRowsEl.appendChild(rowEl);
+    });
+    updateProgressMaterialsTotal();
+  }
+
+  function updateProgressMaterialsTotal() {
+    const section = getActiveSection(getActiveProject());
+    const total = progressMaterialRows.reduce((acc, row) => acc + (computeRowCost(section, row) || 0), 0);
+    progressMaterialsCostEl.textContent = formatMoney(round2(total));
+  }
+
+  function openProgressDialog(entry, prefill) {
+    const project = getActiveProject();
+    const section = getActiveSection(project);
+    const data = entry || prefill || null;
+    progressDialogTitle.textContent = entry
+      ? "Изменить запись"
+      : prefill
+      ? "Новый акт (распознано из файла — проверьте перед сохранением)"
+      : "Новая запись о выполнении";
     progressIdInput.value = entry ? entry.id : "";
-    progressDateInput.value = entry ? entry.date : new Date().toISOString().slice(0, 10);
-    progressAmountInput.value = entry ? entry.amount : "";
-    progressNoteInput.value = entry ? entry.note || "" : "";
+    progressDateInput.value =
+      data && /^\d{4}-\d{2}-\d{2}$/.test(data.date || "") ? data.date : new Date().toISOString().slice(0, 10);
+    progressAmountInput.value = data && data.amount != null ? data.amount : "";
+    progressNoteInput.value = data ? data.note || "" : "";
+
+    if (entry) {
+      progressMaterialRows = (entry.materials || []).map((u) => ({
+        materialId: u.materialId,
+        qty: u.qty != null ? String(u.qty) : "",
+        unmatchedName: "",
+      }));
+    } else if (prefill && prefill.materials && prefill.materials.length) {
+      progressMaterialRows = prefill.materials.map((m) => {
+        const materialId = section ? matchMaterialByName(section, m.name) : null;
+        return {
+          materialId: materialId || "",
+          qty: m.qty != null ? String(m.qty) : "",
+          unmatchedName: materialId ? "" : m.name || "",
+        };
+      });
+    } else {
+      progressMaterialRows = [];
+    }
+    renderProgressMaterialRows();
+
     progressDialog.showModal();
     progressAmountInput.focus();
   }
 
   el("addProgressBtn").addEventListener("click", () => openProgressDialog(null));
+
+  addProgressMaterialRowBtn.addEventListener("click", () => {
+    progressMaterialRows.push({ materialId: "", qty: "", unmatchedName: "" });
+    renderProgressMaterialRows();
+    const rows = progressMaterialRowsEl.querySelectorAll(".import-row");
+    const last = rows[rows.length - 1];
+    if (last) last.querySelector("select").focus();
+  });
 
   progressForm.addEventListener("submit", () => {
     const project = getActiveProject();
@@ -1455,12 +1708,15 @@
     const date = progressDateInput.value;
     if (Number.isNaN(amount) || amount < 0 || !date) return;
     const note = progressNoteInput.value.trim();
+    const materials = progressMaterialRows
+      .filter((r) => r.materialId && r.qty !== "" && !Number.isNaN(Number(r.qty)) && Number(r.qty) > 0)
+      .map((r) => ({ materialId: r.materialId, qty: Number(r.qty) }));
 
     if (progressIdInput.value) {
       const p = section.progress.find((x) => x.id === progressIdInput.value);
-      if (p) Object.assign(p, { amount, date, note });
+      if (p) Object.assign(p, { amount, date, note, materials });
     } else {
-      section.progress.push({ id: uid(), amount, date, note });
+      section.progress.push({ id: uid(), amount, date, note, materials });
     }
     saveState();
     render();
@@ -1472,6 +1728,72 @@
     saveState();
     render();
   }
+
+  // --- Act (акт) recognition from an uploaded file ---
+
+  const progressFileInput = el("progressFileInput");
+  const progressImportStatus = el("progressImportStatus");
+  const addProgressByFileBtn = el("addProgressByFileBtn");
+
+  addProgressByFileBtn.addEventListener("click", () => {
+    const project = getActiveProject();
+    const section = getActiveSection(project);
+    if (!section) return;
+    if (!requireApiKeyOrOpenSettings()) return;
+    progressFileInput.value = "";
+    progressFileInput.click();
+  });
+
+  progressFileInput.addEventListener("change", async () => {
+    const file = progressFileInput.files && progressFileInput.files[0];
+    if (!file) return;
+    const apiKey = loadSettings().anthropicApiKey;
+    if (!apiKey) return;
+
+    addProgressByFileBtn.disabled = true;
+    progressImportStatus.hidden = false;
+    try {
+      const extracted = await extractFileContent(file);
+      const blocks = buildContentBlocks(
+        extracted,
+        "Это акт выполненных работ (акт приёмки) от субподрядчика. Извлеки: итоговую сумму выполненных работ по акту, дату акта в формате YYYY-MM-DD, краткое описание/суть работ одной фразой, и список использованных материалов с их количеством числом, если они указаны в акте."
+      );
+      const schema = {
+        type: "object",
+        properties: {
+          date: { type: "string", description: "Дата акта в формате YYYY-MM-DD, если указана" },
+          amount: { type: "number", description: "Итоговая сумма выполненных работ по акту" },
+          note: { type: "string", description: "Краткое описание/суть выполненных работ одной фразой" },
+          materials: {
+            type: "array",
+            description: "Материалы, использованные согласно акту",
+            items: {
+              type: "object",
+              properties: {
+                name: { type: "string", description: "Название материала, как указано в акте" },
+                qty: { type: "number", description: "Использованное количество материала, числом, без единиц измерения" },
+              },
+              required: ["name", "qty"],
+              additionalProperties: false,
+            },
+          },
+        },
+        required: ["amount"],
+        additionalProperties: false,
+      };
+      const result = await callClaudeExtract(apiKey, blocks, schema, 2048);
+      openProgressDialog(null, result);
+    } catch (err) {
+      console.error(err);
+      alert(
+        `Не удалось распознать акт: ${err.message}\n\n` +
+          "Введите данные вручную кнопкой «+ Запись»."
+      );
+    } finally {
+      addProgressByFileBtn.disabled = false;
+      progressImportStatus.hidden = true;
+    }
+  });
 
   render();
 })();

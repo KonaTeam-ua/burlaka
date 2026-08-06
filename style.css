@@ -417,6 +417,11 @@ body {
 
 .data-table tr:last-child td { border-bottom: none; }
 
+.data-table td.bad {
+  color: var(--critical);
+  font-weight: 600;
+}
+
 .row-actions {
   display: flex;
   gap: 6px;
@@ -542,7 +547,22 @@ body {
   align-items: center;
 }
 
-.import-row input { margin-top: 0; }
+.import-row input,
+.import-row select { margin-top: 0; }
+
+.import-row input[readonly] {
+  background: var(--border);
+  color: var(--text-muted);
+}
+
+.import-row-materials {
+  display: grid;
+  grid-template-columns: 2fr 0.7fr 0.9fr 1fr auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.import-row-materials input { margin-top: 0; }
 
 .import-row-delete {
   border: none;
@@ -555,6 +575,22 @@ body {
 }
 
 .import-row-delete:hover { color: var(--critical); }
+
+.subform-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.subform-total {
+  font-size: 13px;
+  color: var(--text-secondary);
+  text-align: right;
+  margin-bottom: 12px;
+}
 
 .dialog-actions {
   display: flex;
