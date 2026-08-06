@@ -1651,14 +1651,16 @@
     progressMaterialsCostEl.textContent = formatMoney(round2(total));
   }
 
-  function openProgressDialog(entry, prefill) {
+  function openProgressDialog(entry, prefill, batchInfo) {
     const project = getActiveProject();
     const section = getActiveSection(project);
     const data = entry || prefill || null;
     progressDialogTitle.textContent = entry
       ? "Изменить запись"
       : prefill
-      ? "Новый акт (распознано из файла — проверьте перед сохранением)"
+      ? batchInfo
+        ? `Акт ${batchInfo.index} из ${batchInfo.total} — распознано из файла, проверьте перед сохранением`
+        : "Новый акт (распознано из файла — проверьте перед сохранением)"
       : "Новая запись о выполнении";
     progressIdInput.value = entry ? entry.id : "";
     progressDateInput.value =
@@ -1689,6 +1691,25 @@
     progressDialog.showModal();
     progressAmountInput.focus();
   }
+
+  // If a file contains several acts, they queue up here and are reviewed
+  // one at a time — each dialog close (save or cancel) advances the queue.
+  let pendingActs = [];
+  let pendingActsTotal = 0;
+
+  function openNextPendingAct() {
+    if (!pendingActs.length) {
+      pendingActsTotal = 0;
+      return;
+    }
+    const next = pendingActs.shift();
+    const index = pendingActsTotal - pendingActs.length;
+    openProgressDialog(null, next, pendingActsTotal > 1 ? { index, total: pendingActsTotal } : null);
+  }
+
+  progressDialog.addEventListener("close", () => {
+    openNextPendingAct();
+  });
 
   el("addProgressBtn").addEventListener("click", () => openProgressDialog(null));
 
@@ -1756,33 +1777,49 @@
       const extracted = await extractFileContent(file);
       const blocks = buildContentBlocks(
         extracted,
-        "Это акт выполненных работ (акт приёмки) от субподрядчика. Извлеки: итоговую сумму выполненных работ по акту, дату акта в формате YYYY-MM-DD, краткое описание/суть работ одной фразой, и список использованных материалов с их количеством числом, если они указаны в акте."
+        "Это один или несколько актов выполненных работ (актов приёмки) от субподрядчика — в файле может быть один акт или сразу несколько за разные даты/на разные суммы. Извлеки список актов; для каждого — итоговую сумму выполненных работ, дату акта в формате YYYY-MM-DD, краткое описание/суть работ одной фразой, и список использованных материалов с их количеством числом, если они указаны."
       );
       const schema = {
         type: "object",
         properties: {
-          date: { type: "string", description: "Дата акта в формате YYYY-MM-DD, если указана" },
-          amount: { type: "number", description: "Итоговая сумма выполненных работ по акту" },
-          note: { type: "string", description: "Краткое описание/суть выполненных работ одной фразой" },
-          materials: {
+          acts: {
             type: "array",
-            description: "Материалы, использованные согласно акту",
+            description: "Список актов выполненных работ, найденных в файле (один или несколько)",
             items: {
               type: "object",
               properties: {
-                name: { type: "string", description: "Название материала, как указано в акте" },
-                qty: { type: "number", description: "Использованное количество материала, числом, без единиц измерения" },
+                date: { type: "string", description: "Дата акта в формате YYYY-MM-DD, если указана" },
+                amount: { type: "number", description: "Итоговая сумма выполненных работ по акту" },
+                note: { type: "string", description: "Краткое описание/суть выполненных работ одной фразой" },
+                materials: {
+                  type: "array",
+                  description: "Материалы, использованные согласно акту",
+                  items: {
+                    type: "object",
+                    properties: {
+                      name: { type: "string", description: "Название материала, как указано в акте" },
+                      qty: { type: "number", description: "Использованное количество материала, числом, без единиц измерения" },
+                    },
+                    required: ["name", "qty"],
+                    additionalProperties: false,
+                  },
+                },
               },
-              required: ["name", "qty"],
+              required: ["amount"],
               additionalProperties: false,
             },
           },
         },
-        required: ["amount"],
+        required: ["acts"],
         additionalProperties: false,
       };
-      const result = await callClaudeExtract(apiKey, blocks, schema, 2048);
-      openProgressDialog(null, result);
+      const result = await callClaudeExtract(apiKey, blocks, schema, 4096);
+      if (!result.acts || !result.acts.length) {
+        throw new Error("В файле не найдено ни одного акта.");
+      }
+      pendingActs = result.acts.slice();
+      pendingActsTotal = pendingActs.length;
+      openNextPendingAct();
     } catch (err) {
       console.error(err);
       alert(
