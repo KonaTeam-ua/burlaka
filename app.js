@@ -1205,6 +1205,10 @@
       body: JSON.stringify({
         model: "claude-opus-5",
         max_tokens: maxTokens || 1024,
+        // Thinking is on by default for this model and shares the max_tokens budget
+        // with the actual response — for a well-defined extraction task that just
+        // burns tokens on reasoning with nothing left for the JSON output itself.
+        thinking: { type: "disabled" },
         output_config: { format: { type: "json_schema", schema } },
         messages: [{ role: "user", content: contentBlocks }],
       }),
@@ -1226,7 +1230,14 @@
       throw new Error("Модель отказалась обрабатывать этот файл.");
     }
     const textBlock = (data.content || []).find((b) => b.type === "text");
-    if (!textBlock) throw new Error("Пустой ответ модели — не удалось распознать документ.");
+    if (!textBlock) {
+      if (data.stop_reason === "max_tokens") {
+        throw new Error(
+          "Ответ модели превысил лимит длины и был обрезан — вероятно, файл слишком большой или сложный для одного запроса."
+        );
+      }
+      throw new Error("Пустой ответ модели — не удалось распознать документ.");
+    }
     return JSON.parse(textBlock.text);
   }
 
@@ -1819,7 +1830,7 @@
         required: ["acts"],
         additionalProperties: false,
       };
-      const result = await callClaudeExtract(apiKey, blocks, schema, 8000);
+      const result = await callClaudeExtract(apiKey, blocks, schema, 16000);
       if (!result.acts || !result.acts.length) {
         throw new Error("В файле не найдено ни одного акта.");
       }
