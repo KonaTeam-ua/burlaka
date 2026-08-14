@@ -301,6 +301,8 @@
   const materialsBodyEl = el("materialsBody");
   const materialsTotalEl = el("materialsTotal");
   const progressBodyEl = el("progressBody");
+  const progressWorkTotalEl = el("progressWorkTotal");
+  const progressMaterialsTotalEl = el("progressMaterialsTotal");
   const progressTotalEl = el("progressTotal");
 
   // --- Generic dialog cancel wiring ---
@@ -625,6 +627,8 @@
         });
     }
     const stats = computeSectionStats(section);
+    progressWorkTotalEl.textContent = formatMoney(stats.earnedWork);
+    progressMaterialsTotalEl.textContent = formatMoney(stats.earnedMaterials);
     progressTotalEl.textContent = formatMoney(stats.earned);
   }
 
