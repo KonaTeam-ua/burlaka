@@ -286,6 +286,12 @@ body {
 .stat-tile .value.good { color: var(--good); }
 .stat-tile .value.bad { color: var(--critical); }
 
+.stat-tile .sub {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
 /* Chart */
 .chart-card {
   background: var(--panel);
@@ -420,6 +426,10 @@ body {
 .data-table td.bad {
   color: var(--critical);
   font-weight: 600;
+}
+
+.data-table td[title] {
+  cursor: help;
 }
 
 .row-actions {

@@ -165,6 +165,14 @@
       .join("; ");
   }
 
+  function computeEntryMaterialsCost(section, entry) {
+    return round2((entry.materials || []).reduce((acc, u) => acc + (computeRowCost(section, u) || 0), 0));
+  }
+
+  function computeEntryTotal(section, entry) {
+    return round2((Number(entry.amount) || 0) + computeEntryMaterialsCost(section, entry));
+  }
+
   function matchMaterialByName(section, name) {
     if (!name || !section) return null;
     const needle = name.trim().toLowerCase();
@@ -180,12 +188,18 @@
 
   function computeSectionStats(section) {
     const spent = round2(sum(section.contracts, "sum") + sum(section.materials, "sum"));
-    const earned = sum(section.progress, "amount");
+    const earnedWork = sum(section.progress, "amount");
+    const earnedMaterials = round2(
+      section.progress.reduce((acc, p) => acc + computeEntryMaterialsCost(section, p), 0)
+    );
+    const earned = round2(earnedWork + earnedMaterials);
     const budget = Number(section.budget) || 0;
     return {
       budget,
       spent,
       earned,
+      earnedWork,
+      earnedMaterials,
       margin: round2(earned - spent),
       percent: budget > 0 ? (earned / budget) * 100 : 0,
     };
@@ -198,9 +212,11 @@
         acc.budget += st.budget;
         acc.spent += st.spent;
         acc.earned += st.earned;
+        acc.earnedWork += st.earnedWork;
+        acc.earnedMaterials += st.earnedMaterials;
         return acc;
       },
-      { budget: 0, spent: 0, earned: 0 }
+      { budget: 0, spent: 0, earned: 0, earnedWork: 0, earnedMaterials: 0 }
     );
   }
 
@@ -209,7 +225,7 @@
     project.sections.forEach((s) => {
       s.contracts.forEach((c) => events.push({ date: c.date, amount: Number(c.sum) || 0, kind: "spent" }));
       s.materials.forEach((m) => events.push({ date: m.date, amount: Number(m.sum) || 0, kind: "spent" }));
-      s.progress.forEach((p) => events.push({ date: p.date, amount: Number(p.amount) || 0, kind: "earned" }));
+      s.progress.forEach((p) => events.push({ date: p.date, amount: computeEntryTotal(s, p), kind: "earned" }));
     });
     if (!events.length) return [];
     const dates = [...new Set(events.map((e) => e.date))].sort();
@@ -371,7 +387,7 @@
     sectionTabsEl.appendChild(addBtn);
   }
 
-  function statTile(label, value, tone) {
+  function statTile(label, value, tone, sub) {
     const tile = document.createElement("div");
     tile.className = "stat-tile";
     const l = document.createElement("div");
@@ -382,6 +398,12 @@
     v.textContent = value;
     tile.appendChild(l);
     tile.appendChild(v);
+    if (sub) {
+      const s = document.createElement("div");
+      s.className = "sub";
+      s.textContent = sub;
+      tile.appendChild(s);
+    }
     return tile;
   }
 
@@ -391,7 +413,14 @@
 
     overviewStatsEl.innerHTML = "";
     overviewStatsEl.appendChild(statTile("Бюджет по договору", formatMoney(stats.budget)));
-    overviewStatsEl.appendChild(statTile("Заработано (освоено)", formatMoney(stats.earned)));
+    overviewStatsEl.appendChild(
+      statTile(
+        "Заработано (освоено)",
+        formatMoney(stats.earned),
+        undefined,
+        `Работы: ${formatMoney(stats.earnedWork)} · Материалы: ${formatMoney(stats.earnedMaterials)}`
+      )
+    );
     overviewStatsEl.appendChild(statTile("Потрачено", formatMoney(stats.spent)));
     overviewStatsEl.appendChild(statTile("Маржа", formatMoney(margin), margin >= 0 ? "good" : "bad"));
 
@@ -415,7 +444,12 @@
         appendCell(tr, section.name);
         appendCell(tr, formatMoney(st.budget));
         appendCell(tr, formatMoney(st.spent));
-        appendCell(tr, formatMoney(st.earned));
+        appendCell(
+          tr,
+          formatMoney(st.earned),
+          undefined,
+          `Работы: ${formatMoney(st.earnedWork)} · Материалы: ${formatMoney(st.earnedMaterials)}`
+        );
         appendCell(tr, formatMoney(st.margin), st.margin >= 0 ? "good" : "bad");
         appendCell(tr, `${Math.round(st.percent)}%`);
         tr.style.cursor = "pointer";
@@ -430,10 +464,11 @@
     }
   }
 
-  function appendCell(tr, text, tone) {
+  function appendCell(tr, text, tone, title) {
     const td = document.createElement("td");
     td.textContent = text;
     if (tone) td.classList.add(tone);
+    if (title) td.title = title;
     tr.appendChild(td);
   }
 
@@ -444,7 +479,14 @@
     sectionStatsEl.innerHTML = "";
     sectionStatsEl.appendChild(statTile("Бюджет (доход)", formatMoney(st.budget)));
     sectionStatsEl.appendChild(statTile("Затраты", formatMoney(st.spent)));
-    sectionStatsEl.appendChild(statTile("Освоено", formatMoney(st.earned)));
+    sectionStatsEl.appendChild(
+      statTile(
+        "Освоено",
+        formatMoney(st.earned),
+        undefined,
+        `Работы: ${formatMoney(st.earnedWork)} · Материалы: ${formatMoney(st.earnedMaterials)}`
+      )
+    );
     sectionStatsEl.appendChild(statTile("Маржа", formatMoney(st.margin), st.margin >= 0 ? "good" : "bad"));
     sectionProgressFillEl.style.width = `${Math.min(100, Math.max(0, st.percent))}%`;
 
@@ -522,17 +564,21 @@
   function renderProgress(section) {
     progressBodyEl.innerHTML = "";
     if (!section.progress.length) {
-      renderEmptyRow(progressBodyEl, 6, "Выполнение работ ещё не отмечалось");
+      renderEmptyRow(progressBodyEl, 8, "Выполнение работ ещё не отмечалось");
     } else {
       let running = 0;
       section.progress
         .slice()
         .sort((a, b) => a.date.localeCompare(b.date))
         .forEach((p) => {
-          running = round2(running + (Number(p.amount) || 0));
+          const materialsCost = computeEntryMaterialsCost(section, p);
+          const total = computeEntryTotal(section, p);
+          running = round2(running + total);
           const tr = document.createElement("tr");
           appendCell(tr, formatDate(p.date));
           appendCell(tr, formatMoney(p.amount));
+          appendCell(tr, formatMoney(materialsCost));
+          appendCell(tr, formatMoney(total));
           appendCell(tr, formatMoney(running));
           appendCell(tr, describeProgressMaterials(section, p));
           appendCell(tr, p.note || "");
@@ -543,7 +589,8 @@
           progressBodyEl.appendChild(tr);
         });
     }
-    progressTotalEl.textContent = formatMoney(sum(section.progress, "amount"));
+    const stats = computeSectionStats(section);
+    progressTotalEl.textContent = formatMoney(stats.earned);
   }
 
   function rowActions(onEdit, onDelete) {
@@ -1578,6 +1625,7 @@
   const progressMaterialRowsEl = el("progressMaterialRows");
   const addProgressMaterialRowBtn = el("addProgressMaterialRowBtn");
   const progressMaterialsCostEl = el("progressMaterialsCost");
+  const progressActTotalEl = el("progressActTotal");
 
   let progressMaterialRows = [];
 
@@ -1658,8 +1706,12 @@
 
   function updateProgressMaterialsTotal() {
     const section = getActiveSection(getActiveProject());
-    const total = progressMaterialRows.reduce((acc, row) => acc + (computeRowCost(section, row) || 0), 0);
-    progressMaterialsCostEl.textContent = formatMoney(round2(total));
+    const materialsCost = round2(
+      progressMaterialRows.reduce((acc, row) => acc + (computeRowCost(section, row) || 0), 0)
+    );
+    progressMaterialsCostEl.textContent = formatMoney(materialsCost);
+    const work = Number(progressAmountInput.value) || 0;
+    progressActTotalEl.textContent = formatMoney(round2(work + materialsCost));
   }
 
   function openProgressDialog(entry, prefill, batchInfo) {
@@ -1728,6 +1780,8 @@
   });
 
   el("addProgressBtn").addEventListener("click", () => openProgressDialog(null));
+
+  progressAmountInput.addEventListener("input", () => updateProgressMaterialsTotal());
 
   addProgressMaterialRowBtn.addEventListener("click", () => {
     progressMaterialRows.push({ materialId: "", qty: "", unmatchedName: "" });
