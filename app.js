@@ -199,18 +199,60 @@
     return round2(contracts.reduce((acc, c) => acc + computeContractSum(c), 0));
   }
 
-  function describeContractItems(contract) {
+  function computeContractItemRateWithVat(item, vatRate) {
+    return round2((Number(item.rate) || 0) * (1 + (Number(vatRate) || 0) / 100));
+  }
+
+  // Rendered as a small nested table (not a single text blob) so наименование/
+  // объём/расценка/сумма line up in their own columns. Rate and sum are shown
+  // gross of VAT — that's the number that matters when reading the breakdown,
+  // even though it's stored net (see computeContractSum).
+  function buildContractItemsCell(contract) {
     const items = contract.items || [];
-    if (!items.length) return "—";
-    const lines = items
-      .map((item) => {
-        const qtyText = formatQty(item.qtyValue, item.qtyUnit);
-        return `${item.name || "—"}: ${qtyText} × ${formatMoney(Number(item.rate) || 0)} = ${formatMoney(computeContractItemSum(item))}`;
-      })
-      .join("; ");
-    const rate = Number(contract.vatRate);
-    const vatText = rate > 0 ? ` (+ НДС ${rate}%: ${formatMoney(computeContractVatAmount(contract))})` : "";
-    return lines + vatText;
+    if (!items.length) {
+      const span = document.createElement("span");
+      span.textContent = "—";
+      return span;
+    }
+    const vatRate = Number(contract.vatRate) || 0;
+    const table = document.createElement("table");
+    table.className = "contract-items-subtable";
+    if (vatRate > 0) {
+      const caption = document.createElement("caption");
+      caption.textContent = `Расценка и сумма — с НДС ${vatRate}%`;
+      table.appendChild(caption);
+    }
+    const thead = document.createElement("thead");
+    const headRow = document.createElement("tr");
+    ["Наименование", "Объём", "Расценка", "Сумма"].forEach((label) => {
+      const th = document.createElement("th");
+      th.textContent = label;
+      headRow.appendChild(th);
+    });
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+
+    const tbody = document.createElement("tbody");
+    items.forEach((item) => {
+      const rateWithVat = computeContractItemRateWithVat(item, vatRate);
+      const sumWithVat = round2((Number(item.qtyValue) || 0) * rateWithVat);
+      const tr = document.createElement("tr");
+      const nameTd = document.createElement("td");
+      nameTd.textContent = item.name || "—";
+      const qtyTd = document.createElement("td");
+      qtyTd.textContent = formatQty(item.qtyValue, item.qtyUnit);
+      const rateTd = document.createElement("td");
+      rateTd.textContent = formatMoney(rateWithVat);
+      const sumTd = document.createElement("td");
+      sumTd.textContent = formatMoney(sumWithVat);
+      tr.appendChild(nameTd);
+      tr.appendChild(qtyTd);
+      tr.appendChild(rateTd);
+      tr.appendChild(sumTd);
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    return table;
   }
 
   function computeEntryTotal(section, entry) {
@@ -673,7 +715,9 @@
           appendCell(tr, c.name);
           appendCell(tr, formatMoney(computeContractSum(c)));
           appendCell(tr, formatDate(c.date));
-          appendCell(tr, describeContractItems(c));
+          const itemsTd = document.createElement("td");
+          itemsTd.appendChild(buildContractItemsCell(c));
+          tr.appendChild(itemsTd);
           appendCell(tr, c.note || "");
           tr.appendChild(rowActions(
             () => openContractDialog(c),
