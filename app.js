@@ -173,17 +173,52 @@
     return round2((Number(entry.amount) || 0) + computeEntryMaterialsCost(section, entry));
   }
 
+  function normalizeMaterialName(name) {
+    return (name || "")
+      .toLowerCase()
+      .replace(/[.,;:()«»"'']/g, " ")
+      .replace(/[-–—]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function materialNameTokens(name) {
+    return normalizeMaterialName(name)
+      .split(" ")
+      .filter((t) => t.length > 1);
+  }
+
+  // Deliberately forgiving: an act's wording for a material rarely matches the
+  // purchased item letter-for-letter (different word order, missing spec details,
+  // ua/ru spelling), so a name is matched to whichever purchased material shares
+  // the most significant words rather than requiring an exact/substring match.
   function matchMaterialByName(section, name) {
     if (!name || !section) return null;
-    const needle = name.trim().toLowerCase();
-    if (!needle) return null;
-    const exact = section.materials.find((m) => m.name.trim().toLowerCase() === needle);
+    const needleNorm = normalizeMaterialName(name);
+    if (!needleNorm) return null;
+
+    const exact = section.materials.find((m) => normalizeMaterialName(m.name) === needleNorm);
     if (exact) return exact.id;
-    const partial = section.materials.find((m) => {
-      const hay = m.name.trim().toLowerCase();
-      return hay.includes(needle) || needle.includes(hay);
+
+    const substring = section.materials.find((m) => {
+      const hay = normalizeMaterialName(m.name);
+      return hay.includes(needleNorm) || needleNorm.includes(hay);
     });
-    return partial ? partial.id : null;
+    if (substring) return substring.id;
+
+    const needleTokens = new Set(materialNameTokens(name));
+    if (!needleTokens.size) return null;
+    let best = null;
+    let bestScore = 0;
+    section.materials.forEach((m) => {
+      const hayTokens = materialNameTokens(m.name);
+      const shared = hayTokens.filter((t) => needleTokens.has(t)).length;
+      if (shared > bestScore) {
+        bestScore = shared;
+        best = m;
+      }
+    });
+    return best ? best.id : null;
   }
 
   function computeSectionStats(section) {
