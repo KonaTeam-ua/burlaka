@@ -342,12 +342,83 @@
   const sectionProgressFillEl = el("sectionProgressFill");
   const contractsBodyEl = el("contractsBody");
   const contractsTotalEl = el("contractsTotal");
+  const contractsSelectAllEl = el("contractsSelectAll");
+  const deleteSelectedContractsBtn = el("deleteSelectedContractsBtn");
   const materialsBodyEl = el("materialsBody");
   const materialsTotalEl = el("materialsTotal");
+  const materialsSelectAllEl = el("materialsSelectAll");
+  const deleteSelectedMaterialsBtn = el("deleteSelectedMaterialsBtn");
   const progressBodyEl = el("progressBody");
   const progressWorkTotalEl = el("progressWorkTotal");
   const progressMaterialsTotalEl = el("progressMaterialsTotal");
   const progressTotalEl = el("progressTotal");
+  const progressSelectAllEl = el("progressSelectAll");
+  const deleteSelectedProgressBtn = el("deleteSelectedProgressBtn");
+
+  function selectCell(id) {
+    const td = document.createElement("td");
+    td.className = "select-cell";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.className = "row-select";
+    cb.dataset.id = id;
+    td.appendChild(cb);
+    return td;
+  }
+
+  function getCheckedIds(bodyEl) {
+    return Array.from(bodyEl.querySelectorAll(".row-select:checked")).map((cb) => cb.dataset.id);
+  }
+
+  function wireRowSelection(bodyEl, selectAllEl, deleteBtn) {
+    bodyEl.addEventListener("change", (e) => {
+      if (!e.target.classList.contains("row-select")) return;
+      deleteBtn.hidden = getCheckedIds(bodyEl).length === 0;
+    });
+    selectAllEl.addEventListener("change", () => {
+      bodyEl.querySelectorAll(".row-select").forEach((cb) => {
+        cb.checked = selectAllEl.checked;
+      });
+      deleteBtn.hidden = getCheckedIds(bodyEl).length === 0;
+    });
+  }
+
+  wireRowSelection(contractsBodyEl, contractsSelectAllEl, deleteSelectedContractsBtn);
+  wireRowSelection(materialsBodyEl, materialsSelectAllEl, deleteSelectedMaterialsBtn);
+  wireRowSelection(progressBodyEl, progressSelectAllEl, deleteSelectedProgressBtn);
+
+  deleteSelectedContractsBtn.addEventListener("click", () => {
+    const section = getActiveSection(getActiveProject());
+    if (!section) return;
+    const ids = getCheckedIds(contractsBodyEl);
+    if (!ids.length) return;
+    if (!confirm(`Удалить выделенные договоры (${ids.length})?`)) return;
+    section.contracts = section.contracts.filter((c) => !ids.includes(c.id));
+    saveState();
+    render();
+  });
+
+  deleteSelectedMaterialsBtn.addEventListener("click", () => {
+    const section = getActiveSection(getActiveProject());
+    if (!section) return;
+    const ids = getCheckedIds(materialsBodyEl);
+    if (!ids.length) return;
+    if (!confirm(`Удалить выделенные материалы (${ids.length})?`)) return;
+    section.materials = section.materials.filter((m) => !ids.includes(m.id));
+    saveState();
+    render();
+  });
+
+  deleteSelectedProgressBtn.addEventListener("click", () => {
+    const section = getActiveSection(getActiveProject());
+    if (!section) return;
+    const ids = getCheckedIds(progressBodyEl);
+    if (!ids.length) return;
+    if (!confirm(`Удалить выделенные записи (${ids.length})?`)) return;
+    section.progress = section.progress.filter((p) => !ids.includes(p.id));
+    saveState();
+    render();
+  });
 
   // --- Generic dialog cancel wiring ---
   document.addEventListener("click", (e) => {
@@ -588,14 +659,17 @@
 
   function renderContracts(section) {
     contractsBodyEl.innerHTML = "";
+    contractsSelectAllEl.checked = false;
+    deleteSelectedContractsBtn.hidden = true;
     if (!section.contracts.length) {
-      renderEmptyRow(contractsBodyEl, 6, "Договоров пока нет");
+      renderEmptyRow(contractsBodyEl, 7, "Договоров пока нет");
     } else {
       section.contracts
         .slice()
         .sort((a, b) => a.date.localeCompare(b.date))
         .forEach((c) => {
           const tr = document.createElement("tr");
+          tr.appendChild(selectCell(c.id));
           appendCell(tr, c.name);
           appendCell(tr, formatMoney(computeContractSum(c)));
           appendCell(tr, formatDate(c.date));
@@ -613,8 +687,10 @@
 
   function renderMaterials(section) {
     materialsBodyEl.innerHTML = "";
+    materialsSelectAllEl.checked = false;
+    deleteSelectedMaterialsBtn.hidden = true;
     if (!section.materials.length) {
-      renderEmptyRow(materialsBodyEl, 6, "Материалы пока не закупались");
+      renderEmptyRow(materialsBodyEl, 7, "Материалы пока не закупались");
     } else {
       const usage = computeMaterialUsage(section);
       section.materials
@@ -622,6 +698,7 @@
         .sort((a, b) => a.date.localeCompare(b.date))
         .forEach((m) => {
           const tr = document.createElement("tr");
+          tr.appendChild(selectCell(m.id));
           appendCell(tr, m.name);
           appendCell(tr, formatQty(m.qtyValue, m.qtyUnit));
           const used = usage[m.id] || 0;
@@ -645,8 +722,10 @@
 
   function renderProgress(section) {
     progressBodyEl.innerHTML = "";
+    progressSelectAllEl.checked = false;
+    deleteSelectedProgressBtn.hidden = true;
     if (!section.progress.length) {
-      renderEmptyRow(progressBodyEl, 8, "Выполнение работ ещё не отмечалось");
+      renderEmptyRow(progressBodyEl, 9, "Выполнение работ ещё не отмечалось");
     } else {
       let running = 0;
       section.progress
@@ -657,6 +736,7 @@
           const total = computeEntryTotal(section, p);
           running = round2(running + total);
           const tr = document.createElement("tr");
+          tr.appendChild(selectCell(p.id));
           appendCell(tr, formatDate(p.date));
           appendCell(tr, formatMoney(p.amount));
           appendCell(tr, formatMoney(materialsCost));
@@ -1089,6 +1169,7 @@
   const contractNoteInput = el("contractNote");
   const contractItemRowsEl = el("contractItemRows");
   const addContractItemRowBtn = el("addContractItemRowBtn");
+  const deleteSelectedContractItemsBtn = el("deleteSelectedContractItemsBtn");
   const contractVatRateInput = el("contractVatRate");
   const contractItemsSubtotalEl = el("contractItemsSubtotal");
   const contractVatAmountEl = el("contractVatAmount");
@@ -1098,9 +1179,19 @@
 
   function renderContractItemRows() {
     contractItemRowsEl.innerHTML = "";
+    deleteSelectedContractItemsBtn.hidden = true;
     contractItemRows.forEach((row, idx) => {
       const rowEl = document.createElement("div");
       rowEl.className = "import-row-contract-item";
+
+      const selectCb = document.createElement("input");
+      selectCb.type = "checkbox";
+      selectCb.className = "row-select-item";
+      selectCb.dataset.idx = idx;
+      selectCb.addEventListener("change", () => {
+        const anyChecked = contractItemRowsEl.querySelectorAll(".row-select-item:checked").length > 0;
+        deleteSelectedContractItemsBtn.hidden = !anyChecked;
+      });
 
       const nameInput = document.createElement("input");
       nameInput.type = "text";
@@ -1161,6 +1252,7 @@
         renderContractItemRows();
       });
 
+      rowEl.appendChild(selectCb);
       rowEl.appendChild(nameInput);
       rowEl.appendChild(qtyInput);
       rowEl.appendChild(unitInput);
@@ -1171,6 +1263,15 @@
     });
     updateContractItemsTotal();
   }
+
+  deleteSelectedContractItemsBtn.addEventListener("click", () => {
+    const idxToDelete = Array.from(contractItemRowsEl.querySelectorAll(".row-select-item:checked")).map((cb) =>
+      Number(cb.dataset.idx)
+    );
+    if (!idxToDelete.length) return;
+    contractItemRows = contractItemRows.filter((_, idx) => !idxToDelete.includes(idx));
+    renderContractItemRows();
+  });
 
   function updateContractItemsTotal() {
     const subtotal = round2(
