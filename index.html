@@ -132,10 +132,10 @@
         <input type="file" id="progressFileInput" accept=".pdf,image/*" hidden>
         <table class="data-table">
           <thead>
-            <tr><th>Дата</th><th>Сумма</th><th>Нарастающим итогом</th><th>Материалы по акту</th><th>Комментарий</th><th></th></tr>
+            <tr><th>Дата</th><th>Работы</th><th>Материалы</th><th>Итого</th><th>Нарастающим итогом</th><th>Материалы по акту</th><th>Комментарий</th><th></th></tr>
           </thead>
           <tbody id="progressBody"></tbody>
-          <tfoot><tr><td>Итого</td><td id="progressTotal"></td><td colspan="4"></td></tr></tfoot>
+          <tfoot><tr><td>Итого</td><td colspan="2"></td><td id="progressTotal"></td><td colspan="4"></td></tr></tfoot>
         </table>
       </section>
     </div>
@@ -245,7 +245,7 @@
       <label>Дата
         <input type="date" id="progressDate" required>
       </label>
-      <label>Сумма выполненных работ
+      <label>Сумма работ (без материалов)
         <input type="number" id="progressAmount" min="0" step="0.01" required>
       </label>
     </div>
@@ -259,6 +259,7 @@
     </div>
     <div id="progressMaterialRows" class="import-rows"></div>
     <div class="subform-total">Стоимость материалов по акту: <strong id="progressMaterialsCost">0</strong></div>
+    <div class="subform-total">Освоено по акту (работы + материалы): <strong id="progressActTotal">0</strong></div>
 
     <div class="dialog-actions">
       <button type="button" class="btn dialog-cancel">Отмена</button>
