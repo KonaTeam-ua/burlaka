@@ -574,6 +574,20 @@ body {
 
 .import-row-materials input { margin-top: 0; }
 
+.import-row-contract-item {
+  display: grid;
+  grid-template-columns: 2fr 0.7fr 0.7fr 0.8fr 1fr auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.import-row-contract-item input { margin-top: 0; }
+
+.import-row-contract-item input[readonly] {
+  background: var(--border);
+  color: var(--text-muted);
+}
+
 .import-row-delete {
   border: none;
   background: none;
