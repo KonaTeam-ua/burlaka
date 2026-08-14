@@ -89,6 +89,7 @@
           });
           (section.contracts || []).forEach((c) => {
             if (!Array.isArray(c.items)) c.items = [];
+            if (c.vatRate == null) c.vatRate = 20;
           });
         });
       });
@@ -180,11 +181,18 @@
     return round2((contract.items || []).reduce((acc, item) => acc + computeContractItemSum(item), 0));
   }
 
+  function computeContractVatAmount(contract) {
+    const rate = Number(contract.vatRate);
+    return round2(computeContractItemsTotal(contract) * ((Number.isFinite(rate) ? rate : 0) / 100));
+  }
+
   // A contract's price is either entered directly, or — once it has an itemized
-  // breakdown — derived as the sum of its line items (they decompose the same price).
+  // breakdown — derived as the sum of its line items plus VAT on that sum (the
+  // entered rates/sums are net of VAT, so VAT is added on top, not baked in).
   function computeContractSum(contract) {
     const items = contract.items || [];
-    return items.length ? computeContractItemsTotal(contract) : round2(Number(contract.sum) || 0);
+    if (!items.length) return round2(Number(contract.sum) || 0);
+    return round2(computeContractItemsTotal(contract) + computeContractVatAmount(contract));
   }
 
   function sumContracts(contracts) {
@@ -194,12 +202,15 @@
   function describeContractItems(contract) {
     const items = contract.items || [];
     if (!items.length) return "—";
-    return items
+    const lines = items
       .map((item) => {
         const qtyText = formatQty(item.qtyValue, item.qtyUnit);
         return `${item.name || "—"}: ${qtyText} × ${formatMoney(Number(item.rate) || 0)} = ${formatMoney(computeContractItemSum(item))}`;
       })
       .join("; ");
+    const rate = Number(contract.vatRate);
+    const vatText = rate > 0 ? ` (+ НДС ${rate}%: ${formatMoney(computeContractVatAmount(contract))})` : "";
+    return lines + vatText;
   }
 
   function computeEntryTotal(section, entry) {
@@ -1078,6 +1089,9 @@
   const contractNoteInput = el("contractNote");
   const contractItemRowsEl = el("contractItemRows");
   const addContractItemRowBtn = el("addContractItemRowBtn");
+  const contractVatRateInput = el("contractVatRate");
+  const contractItemsSubtotalEl = el("contractItemsSubtotal");
+  const contractVatAmountEl = el("contractVatAmount");
   const contractItemsTotalEl = el("contractItemsTotal");
 
   let contractItemRows = [];
@@ -1159,15 +1173,22 @@
   }
 
   function updateContractItemsTotal() {
-    const total = round2(
+    const subtotal = round2(
       contractItemRows.reduce((acc, row) => acc + computeContractItemSum(row), 0)
     );
+    const vatRate = Number(contractVatRateInput.value);
+    const vatAmount = round2(subtotal * ((Number.isFinite(vatRate) ? vatRate : 0) / 100));
+    const total = round2(subtotal + vatAmount);
+    contractItemsSubtotalEl.textContent = formatMoney(subtotal);
+    contractVatAmountEl.textContent = formatMoney(vatAmount);
     contractItemsTotalEl.textContent = formatMoney(total);
     contractSumInput.readOnly = contractItemRows.length > 0;
     if (contractItemRows.length) {
       contractSumInput.value = total;
     }
   }
+
+  contractVatRateInput.addEventListener("input", () => updateContractItemsTotal());
 
   addContractItemRowBtn.addEventListener("click", () => {
     contractItemRows.push({ name: "", qtyValue: "", qtyUnit: "", rate: "" });
@@ -1189,6 +1210,7 @@
     contractSumInput.value = data && data.sum != null ? data.sum : "";
     contractDateInput.value = data ? data.date || "" : "";
     contractNoteInput.value = data ? data.note || "" : "";
+    contractVatRateInput.value = contract && contract.vatRate != null ? contract.vatRate : 20;
 
     const sourceItems = contract ? contract.items : prefill ? prefill.items : null;
     contractItemRows = (sourceItems || []).map((it) => ({
@@ -1225,14 +1247,18 @@
         qtyUnit: r.qtyUnit.trim(),
         rate: r.rate !== "" && !Number.isNaN(Number(r.rate)) ? Number(r.rate) : null,
       }));
-    const sumVal = items.length ? computeContractItemsTotal({ items }) : Number(contractSumInput.value);
+    const vatRateVal = Number(contractVatRateInput.value);
+    const vatRate = Number.isFinite(vatRateVal) && vatRateVal >= 0 ? vatRateVal : 20;
+    const sumVal = items.length
+      ? computeContractSum({ items, vatRate })
+      : Number(contractSumInput.value);
     if (!name || Number.isNaN(sumVal) || sumVal < 0 || !date) return;
 
     if (contractIdInput.value) {
       const c = section.contracts.find((x) => x.id === contractIdInput.value);
-      if (c) Object.assign(c, { name, sum: sumVal, date, note, items });
+      if (c) Object.assign(c, { name, sum: sumVal, date, note, items, vatRate });
     } else {
-      section.contracts.push({ id: uid(), name, sum: sumVal, date, note, items });
+      section.contracts.push({ id: uid(), name, sum: sumVal, date, note, items, vatRate });
     }
     saveState();
     render();

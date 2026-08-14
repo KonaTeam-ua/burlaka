@@ -541,6 +541,10 @@ body {
   width: 640px;
 }
 
+.contract-vat-rate-row {
+  max-width: 160px;
+}
+
 .import-rows {
   display: flex;
   flex-direction: column;
