@@ -91,10 +91,10 @@
         <input type="file" id="contractFileInput" accept=".pdf,image/*" hidden>
         <table class="data-table">
           <thead>
-            <tr><th>Название / подрядчик</th><th>Сумма</th><th>Дата</th><th>Примечание</th><th></th></tr>
+            <tr><th>Название / подрядчик</th><th>Сумма</th><th>Дата</th><th>Расшифровка цены</th><th>Примечание</th><th></th></tr>
           </thead>
           <tbody id="contractsBody"></tbody>
-          <tfoot><tr><td colspan="1">Итого</td><td id="contractsTotal"></td><td colspan="3"></td></tr></tfoot>
+          <tfoot><tr><td colspan="1">Итого</td><td id="contractsTotal"></td><td colspan="4"></td></tr></tfoot>
         </table>
       </section>
 
@@ -180,7 +180,7 @@
 </dialog>
 
 <!-- Contract dialog -->
-<dialog id="contractDialog" class="dialog">
+<dialog id="contractDialog" class="dialog dialog-wide">
   <form id="contractForm" method="dialog">
     <h3 id="contractDialogTitle">Новый договор</h3>
     <input type="hidden" id="contractId">
@@ -198,6 +198,14 @@
     <label>Примечание
       <input type="text" id="contractNote" maxlength="300">
     </label>
+
+    <div class="subform-header">
+      <span>Расшифровка договорной цены (необязательно): наименование, объём, расценка</span>
+      <button type="button" class="btn btn-small" id="addContractItemRowBtn">+ Позиция</button>
+    </div>
+    <div id="contractItemRows" class="import-rows"></div>
+    <div class="subform-total">Сумма по позициям: <strong id="contractItemsTotal">0</strong></div>
+
     <div class="dialog-actions">
       <button type="button" class="btn dialog-cancel">Отмена</button>
       <button type="submit" class="btn btn-primary">Сохранить</button>

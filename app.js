@@ -87,6 +87,9 @@
           (section.progress || []).forEach((p) => {
             if (!Array.isArray(p.materials)) p.materials = [];
           });
+          (section.contracts || []).forEach((c) => {
+            if (!Array.isArray(c.items)) c.items = [];
+          });
         });
       });
       return parsed;
@@ -169,6 +172,36 @@
     return round2((entry.materials || []).reduce((acc, u) => acc + (computeRowCost(section, u) || 0), 0));
   }
 
+  function computeContractItemSum(item) {
+    return round2((Number(item.qtyValue) || 0) * (Number(item.rate) || 0));
+  }
+
+  function computeContractItemsTotal(contract) {
+    return round2((contract.items || []).reduce((acc, item) => acc + computeContractItemSum(item), 0));
+  }
+
+  // A contract's price is either entered directly, or — once it has an itemized
+  // breakdown — derived as the sum of its line items (they decompose the same price).
+  function computeContractSum(contract) {
+    const items = contract.items || [];
+    return items.length ? computeContractItemsTotal(contract) : round2(Number(contract.sum) || 0);
+  }
+
+  function sumContracts(contracts) {
+    return round2(contracts.reduce((acc, c) => acc + computeContractSum(c), 0));
+  }
+
+  function describeContractItems(contract) {
+    const items = contract.items || [];
+    if (!items.length) return "—";
+    return items
+      .map((item) => {
+        const qtyText = formatQty(item.qtyValue, item.qtyUnit);
+        return `${item.name || "—"}: ${qtyText} × ${formatMoney(Number(item.rate) || 0)} = ${formatMoney(computeContractItemSum(item))}`;
+      })
+      .join("; ");
+  }
+
   function computeEntryTotal(section, entry) {
     return round2((Number(entry.amount) || 0) + computeEntryMaterialsCost(section, entry));
   }
@@ -222,7 +255,7 @@
   }
 
   function computeSectionStats(section) {
-    const spent = round2(sum(section.contracts, "sum") + sum(section.materials, "sum"));
+    const spent = round2(sumContracts(section.contracts) + sum(section.materials, "sum"));
     const earnedWork = sum(section.progress, "amount");
     const earnedMaterials = round2(
       section.progress.reduce((acc, p) => acc + computeEntryMaterialsCost(section, p), 0)
@@ -258,7 +291,7 @@
   function buildTimeline(project) {
     const events = [];
     project.sections.forEach((s) => {
-      s.contracts.forEach((c) => events.push({ date: c.date, amount: Number(c.sum) || 0, kind: "spent" }));
+      s.contracts.forEach((c) => events.push({ date: c.date, amount: computeContractSum(c), kind: "spent" }));
       s.materials.forEach((m) => events.push({ date: m.date, amount: Number(m.sum) || 0, kind: "spent" }));
       s.progress.forEach((p) => events.push({ date: p.date, amount: computeEntryTotal(s, p), kind: "earned" }));
     });
@@ -545,7 +578,7 @@
   function renderContracts(section) {
     contractsBodyEl.innerHTML = "";
     if (!section.contracts.length) {
-      renderEmptyRow(contractsBodyEl, 5, "Договоров пока нет");
+      renderEmptyRow(contractsBodyEl, 6, "Договоров пока нет");
     } else {
       section.contracts
         .slice()
@@ -553,8 +586,9 @@
         .forEach((c) => {
           const tr = document.createElement("tr");
           appendCell(tr, c.name);
-          appendCell(tr, formatMoney(c.sum));
+          appendCell(tr, formatMoney(computeContractSum(c)));
           appendCell(tr, formatDate(c.date));
+          appendCell(tr, describeContractItems(c));
           appendCell(tr, c.note || "");
           tr.appendChild(rowActions(
             () => openContractDialog(c),
@@ -563,7 +597,7 @@
           contractsBodyEl.appendChild(tr);
         });
     }
-    contractsTotalEl.textContent = formatMoney(sum(section.contracts, "sum"));
+    contractsTotalEl.textContent = formatMoney(sumContracts(section.contracts));
   }
 
   function renderMaterials(section) {
@@ -1042,6 +1076,106 @@
   const contractSumInput = el("contractSum");
   const contractDateInput = el("contractDate");
   const contractNoteInput = el("contractNote");
+  const contractItemRowsEl = el("contractItemRows");
+  const addContractItemRowBtn = el("addContractItemRowBtn");
+  const contractItemsTotalEl = el("contractItemsTotal");
+
+  let contractItemRows = [];
+
+  function renderContractItemRows() {
+    contractItemRowsEl.innerHTML = "";
+    contractItemRows.forEach((row, idx) => {
+      const rowEl = document.createElement("div");
+      rowEl.className = "import-row-contract-item";
+
+      const nameInput = document.createElement("input");
+      nameInput.type = "text";
+      nameInput.placeholder = "Наименование";
+      nameInput.value = row.name;
+      nameInput.addEventListener("input", () => {
+        row.name = nameInput.value;
+      });
+
+      const qtyInput = document.createElement("input");
+      qtyInput.type = "number";
+      qtyInput.min = "0";
+      qtyInput.step = "any";
+      qtyInput.placeholder = "Объём";
+      qtyInput.value = row.qtyValue;
+
+      const unitInput = document.createElement("input");
+      unitInput.type = "text";
+      unitInput.placeholder = "Ед. изм.";
+      unitInput.value = row.qtyUnit;
+      unitInput.addEventListener("input", () => {
+        row.qtyUnit = unitInput.value;
+      });
+
+      const rateInput = document.createElement("input");
+      rateInput.type = "number";
+      rateInput.min = "0";
+      rateInput.step = "0.01";
+      rateInput.placeholder = "Расценка";
+      rateInput.value = row.rate;
+
+      const sumInput = document.createElement("input");
+      sumInput.type = "text";
+      sumInput.readOnly = true;
+      sumInput.tabIndex = -1;
+
+      function refreshRowSum() {
+        sumInput.value = formatMoney(computeContractItemSum(row));
+        updateContractItemsTotal();
+      }
+      qtyInput.addEventListener("input", () => {
+        row.qtyValue = qtyInput.value;
+        refreshRowSum();
+      });
+      rateInput.addEventListener("input", () => {
+        row.rate = rateInput.value;
+        refreshRowSum();
+      });
+      refreshRowSum();
+
+      const delBtn = document.createElement("button");
+      delBtn.type = "button";
+      delBtn.className = "import-row-delete";
+      delBtn.textContent = "×";
+      delBtn.title = "Удалить позицию";
+      delBtn.addEventListener("click", () => {
+        contractItemRows.splice(idx, 1);
+        renderContractItemRows();
+      });
+
+      rowEl.appendChild(nameInput);
+      rowEl.appendChild(qtyInput);
+      rowEl.appendChild(unitInput);
+      rowEl.appendChild(rateInput);
+      rowEl.appendChild(sumInput);
+      rowEl.appendChild(delBtn);
+      contractItemRowsEl.appendChild(rowEl);
+    });
+    updateContractItemsTotal();
+  }
+
+  function updateContractItemsTotal() {
+    const total = round2(
+      contractItemRows.reduce((acc, row) => acc + computeContractItemSum(row), 0)
+    );
+    contractItemsTotalEl.textContent = formatMoney(total);
+    contractSumInput.readOnly = contractItemRows.length > 0;
+    if (contractItemRows.length) {
+      contractSumInput.value = total;
+    }
+  }
+
+  addContractItemRowBtn.addEventListener("click", () => {
+    contractItemRows.push({ name: "", qtyValue: "", qtyUnit: "", rate: "" });
+    renderContractItemRows();
+    const rows = contractItemRowsEl.querySelectorAll(".import-row-contract-item");
+    const last = rows[rows.length - 1];
+    if (last) last.querySelector("input").focus();
+  });
 
   function openContractDialog(contract, prefill) {
     const data = contract || prefill || null;
@@ -1055,6 +1189,16 @@
     contractSumInput.value = data && data.sum != null ? data.sum : "";
     contractDateInput.value = data ? data.date || "" : "";
     contractNoteInput.value = data ? data.note || "" : "";
+
+    const sourceItems = contract ? contract.items : prefill ? prefill.items : null;
+    contractItemRows = (sourceItems || []).map((it) => ({
+      name: it.name || "",
+      qtyValue: it.qtyValue != null ? String(it.qtyValue) : "",
+      qtyUnit: it.qtyUnit || "",
+      rate: it.rate != null ? String(it.rate) : "",
+    }));
+    renderContractItemRows();
+
     contractDialog.showModal();
     contractNameInput.focus();
   }
@@ -1066,16 +1210,29 @@
     const section = getActiveSection(project);
     if (!section) return;
     const name = contractNameInput.value.trim();
-    const sumVal = Number(contractSumInput.value);
     const date = contractDateInput.value;
-    if (!name || Number.isNaN(sumVal) || sumVal < 0 || !date) return;
     const note = contractNoteInput.value.trim();
+    const items = contractItemRows
+      .filter(
+        (r) =>
+          r.name.trim() ||
+          (r.qtyValue !== "" && !Number.isNaN(Number(r.qtyValue))) ||
+          (r.rate !== "" && !Number.isNaN(Number(r.rate)))
+      )
+      .map((r) => ({
+        name: r.name.trim(),
+        qtyValue: r.qtyValue !== "" && !Number.isNaN(Number(r.qtyValue)) ? Number(r.qtyValue) : null,
+        qtyUnit: r.qtyUnit.trim(),
+        rate: r.rate !== "" && !Number.isNaN(Number(r.rate)) ? Number(r.rate) : null,
+      }));
+    const sumVal = items.length ? computeContractItemsTotal({ items }) : Number(contractSumInput.value);
+    if (!name || Number.isNaN(sumVal) || sumVal < 0 || !date) return;
 
     if (contractIdInput.value) {
       const c = section.contracts.find((x) => x.id === contractIdInput.value);
-      if (c) Object.assign(c, { name, sum: sumVal, date, note });
+      if (c) Object.assign(c, { name, sum: sumVal, date, note, items });
     } else {
-      section.contracts.push({ id: uid(), name, sum: sumVal, date, note });
+      section.contracts.push({ id: uid(), name, sum: sumVal, date, note, items });
     }
     saveState();
     render();
@@ -1428,7 +1585,7 @@
       const extracted = await extractFileContent(file);
       const blocks = buildContentBlocks(
         extracted,
-        "Это скан или файл договора с субподрядчиком на строительные работы. Извлеки: название субподрядчика (сторона-исполнитель по договору), итоговую договорную сумму, дату договора в формате YYYY-MM-DD (если есть) и краткую суть/предмет договора одной фразой."
+        "Это скан или файл договора с субподрядчиком на строительные работы. Извлеки: название субподрядчика (сторона-исполнитель по договору), итоговую договорную сумму, дату договора в формате YYYY-MM-DD (если есть) и краткую суть/предмет договора одной фразой. Если в файле есть смета/спецификация/расшифровка договорной цены — таблица с перечнем видов работ и их объёмами, расценками и суммами — извлеки её тоже построчно."
       );
       const schema = {
         type: "object",
@@ -1437,11 +1594,26 @@
           sum: { type: "number", description: "Итоговая договорная сумма" },
           date: { type: "string", description: "Дата договора в формате YYYY-MM-DD, если указана" },
           note: { type: "string", description: "Краткая суть/предмет договора одной фразой" },
+          items: {
+            type: "array",
+            description: "Расшифровка договорной цены построчно (смета/спецификация), если она есть в файле",
+            items: {
+              type: "object",
+              properties: {
+                name: { type: "string", description: "Наименование вида работ" },
+                qtyValue: { type: "number", description: "Объём работ, числом, без единиц измерения" },
+                qtyUnit: { type: "string", description: "Единица измерения объёма (напр. м2, м.п., шт)" },
+                rate: { type: "number", description: "Расценка за единицу объёма" },
+              },
+              required: ["name"],
+              additionalProperties: false,
+            },
+          },
         },
         required: ["name", "sum"],
         additionalProperties: false,
       };
-      const result = await callClaudeExtract(apiKey, blocks, schema, 1024);
+      const result = await callClaudeExtract(apiKey, blocks, schema, 4096);
       openContractDialog(null, result);
     } catch (err) {
       console.error(err);
