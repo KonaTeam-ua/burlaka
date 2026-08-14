@@ -423,6 +423,12 @@ body {
 
 .data-table tr:last-child td { border-bottom: none; }
 
+.data-table th:first-child,
+.data-table td.select-cell {
+  width: 1%;
+  white-space: nowrap;
+}
+
 .data-table td.bad {
   color: var(--critical);
   font-weight: 600;
@@ -580,7 +586,7 @@ body {
 
 .import-row-contract-item {
   display: grid;
-  grid-template-columns: 2fr 0.7fr 0.7fr 0.8fr 1fr auto;
+  grid-template-columns: auto 2fr 0.7fr 0.7fr 0.8fr 1fr auto;
   gap: 8px;
   align-items: center;
 }
