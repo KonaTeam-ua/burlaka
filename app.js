@@ -1613,7 +1613,7 @@
         required: ["name", "sum"],
         additionalProperties: false,
       };
-      const result = await callClaudeExtract(apiKey, blocks, schema, 4096);
+      const result = await callClaudeExtract(apiKey, blocks, schema, 16000);
       openContractDialog(null, result);
     } catch (err) {
       console.error(err);
@@ -1779,7 +1779,7 @@
         required: ["materials"],
         additionalProperties: false,
       };
-      const result = await callClaudeExtract(apiKey, blocks, schema, 4096);
+      const result = await callClaudeExtract(apiKey, blocks, schema, 16000);
       if (!result.materials || !result.materials.length) {
         throw new Error("В файле не найдено ни одной позиции материалов.");
       }
