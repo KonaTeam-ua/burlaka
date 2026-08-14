@@ -204,7 +204,12 @@
       <button type="button" class="btn btn-small" id="addContractItemRowBtn">+ Позиция</button>
     </div>
     <div id="contractItemRows" class="import-rows"></div>
-    <div class="subform-total">Сумма по позициям: <strong id="contractItemsTotal">0</strong></div>
+    <label class="contract-vat-rate-row">Ставка НДС, %
+      <input type="number" id="contractVatRate" min="0" step="0.1" value="20">
+    </label>
+    <div class="subform-total">Сумма по позициям (без НДС): <strong id="contractItemsSubtotal">0</strong></div>
+    <div class="subform-total">НДС: <strong id="contractVatAmount">0</strong></div>
+    <div class="subform-total">Сумма с НДС: <strong id="contractItemsTotal">0</strong></div>
 
     <div class="dialog-actions">
       <button type="button" class="btn dialog-cancel">Отмена</button>
