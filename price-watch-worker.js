@@ -14,6 +14,17 @@
 //    2. Откройте своего нового бота и нажмите «Start» (или напишите ему
 //       любое сообщение) — иначе бот не сможет вам писать.
 //
+//    Уже есть бот, который занят другой задачей (например, распознаёт счета
+//    в своей группе)? Можно использовать его: Worker только ОТПРАВЛЯЕТ
+//    сообщения и не читает входящие, поэтому другой задаче он не мешает.
+//    а) Токен возьмите у @BotFather: /mybots → ваш бот → "API Token".
+//    б) Создайте отдельную группу для цен (например «Цены») и добавьте в неё
+//       бота как участника (права администратора не нужны).
+//    в) Узнайте номер (chat_id) этой группы, например: временно добавьте в
+//       группу бота @RawDataBot — он пришлёт сообщение, где в "chat" → "id"
+//       указан номер вида -1001234567890; после этого удалите @RawDataBot.
+//       Этот номер нужен для секрета TELEGRAM_CHAT_ID на шаге 7.
+//
 // B. Хранилище (KV)
 //    3. На https://dash.cloudflare.com откройте "Storage & Databases" →
 //       "KV" → "Create" (Create namespace), имя любое, например price-watch.
@@ -25,7 +36,10 @@
 //    6. Во вкладке воркера "Bindings" → "Add binding" → "KV namespace":
 //       Variable name: PRICES, namespace — созданный на шаге 3.
 //    7. "Settings" → "Variables and Secrets" → "Add", тип "Secret":
-//         TELEGRAM_BOT_TOKEN — токен из шага 1;
+//         TELEGRAM_BOT_TOKEN — токен бота;
+//         TELEGRAM_CHAT_ID   — номер группы (только если используете бота,
+//                              который уже занят другой задачей; для нового
+//                              бота можно не задавать — см. шаг 10);
 //         ADMIN_TOKEN        — придумайте длинный пароль (он защищает
 //                              страницу управления от посторонних).
 //    8. "Settings" → "Trigger Events" (Triggers) → "Add" → "Cron Triggers":
@@ -36,7 +50,9 @@
 //    9. Откройте https://<адрес-воркера>/?token=<ваш ADMIN_TOKEN> — это
 //       страница управления. Сохраните её в закладки на телефоне.
 //   10. Нажмите «Подключить Telegram» — Worker найдёт ваш чат с ботом и
-//       пришлёт тестовое сообщение.
+//       пришлёт тестовое сообщение. Если задан TELEGRAM_CHAT_ID, кнопка
+//       называется «Отправить тест в Telegram» и просто шлёт тестовое
+//       сообщение в эту группу (входящие сообщения бота не читаются).
 //   11. Вставьте ссылку на товар и нажмите «Добавить» — Worker сразу
 //       попробует прочитать цену и покажет результат (или причину ошибки).
 //
@@ -227,7 +243,7 @@ async function telegram(env, method, body) {
 }
 
 async function notify(env, text) {
-  const chatId = await env.PRICES.get("tg_chat");
+  const chatId = env.TELEGRAM_CHAT_ID || (await env.PRICES.get("tg_chat"));
   if (!chatId || !env.TELEGRAM_BOT_TOKEN) return false;
   const result = await telegram(env, "sendMessage", { chat_id: chatId, text });
   return Boolean(result.ok);
@@ -289,7 +305,7 @@ function escapeHtml(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 }
 
-function renderPage(items, { token, message, telegramLinked }) {
+function renderPage(items, { token, message, telegramLinked, fixedChat }) {
   const t = escapeHtml(token);
   const rows = items
     .map((item) => {
@@ -339,7 +355,7 @@ ${message ? `<div class="card msg">${escapeHtml(message)}</div>` : ""}
 <ul>${rows || '<li class="meta">Список пуст — добавьте первую ссылку.</li>'}</ul>
 <div class="row">
   <form method="post" action="/check?token=${t}"><button class="secondary">Проверить все сейчас</button></form>
-  <form method="post" action="/telegram?token=${t}"><button class="secondary">${telegramLinked ? "Переподключить Telegram" : "Подключить Telegram"}</button></form>
+  <form method="post" action="/telegram?token=${t}"><button class="secondary">${fixedChat ? "Отправить тест в Telegram" : telegramLinked ? "Переподключить Telegram" : "Подключить Telegram"}</button></form>
 </div>
 </main></body></html>`;
 }
@@ -364,7 +380,8 @@ async function handleRequest(request, env) {
   if (request.method === "GET" && url.pathname === "/") {
     const items = await loadItems(env);
     const telegramLinked = Boolean(await env.PRICES.get("tg_chat"));
-    const html = renderPage(items, { token, message: url.searchParams.get("msg"), telegramLinked });
+    const fixedChat = Boolean(env.TELEGRAM_CHAT_ID);
+    const html = renderPage(items, { token, message: url.searchParams.get("msg"), telegramLinked, fixedChat });
     return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
   }
 
@@ -406,6 +423,12 @@ async function handleRequest(request, env) {
 
   if (url.pathname === "/telegram") {
     if (!env.TELEGRAM_BOT_TOKEN) return redirect(token, "Не задан секрет TELEGRAM_BOT_TOKEN.");
+    // Группа задана вручную — входящие сообщения бота не трогаем (getUpdates
+    // помешал бы другой программе, которая обслуживает этого же бота).
+    if (env.TELEGRAM_CHAT_ID) {
+      const sent = await notify(env, "✅ Уведомления о снижении цен будут приходить в эту группу.");
+      return redirect(token, sent ? "Тестовое сообщение отправлено — проверьте группу." : "Не удалось отправить сообщение. Проверьте TELEGRAM_CHAT_ID и что бот состоит в группе.");
+    }
     const updates = await telegram(env, "getUpdates", {});
     if (!updates.ok) return redirect(token, `Telegram ответил ошибкой: ${updates.description || "неизвестно"}. Проверьте токен бота.`);
     const chats = (updates.result || []).map((u) => (u.message || u.my_chat_member || {}).chat).filter(Boolean);
