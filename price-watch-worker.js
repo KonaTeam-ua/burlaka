@@ -271,14 +271,14 @@ async function fetchViaReader(url, env) {
     return { error: "HTTP 429 — лимит бесплатных запросов без ключа; добавьте секрет JINA_API_KEY (см. начало кода)" };
   }
   if (page.error) return { error: page.error };
-  const result = extractPrice(page.html);
+  const result = { ...extractPrice(page.html), region: pageCountry(page.html) };
   return result.price == null ? { ...result, error: "цена не найдена" } : { ...result, method: `${result.method}, через Jina Reader` };
 }
 
 async function fetchPrice(url, env) {
   const page = await fetchHtml(url, FETCH_HEADERS);
   if (page.html) {
-    const result = extractPrice(page.html);
+    const result = { ...extractPrice(page.html), region: pageCountry(page.html) };
     if (result.price != null) return result;
     const viaReader = await fetchViaReader(url, env);
     if (!viaReader.error) return viaReader;
@@ -352,21 +352,36 @@ async function checkItem(item, env) {
     return wasFailing ? null : `⚠️ Не удалось проверить цену: ${label}\n${result.error}\n${item.url}`;
   }
 
-  const previous = item.lastPrice;
+  // Магазины с ценами по странам (River Island и др.) отдают Worker'у версию
+  // страны того дата-центра Cloudflare, где он запустился, — а это может
+  // меняться от проверки к проверке. Сравниваем только цены одной страны и
+  // валюты, иначе 56 € (ES) → 54 € (BG) выглядело бы как скидка.
+  const regionKey = `${result.region || "?"}/${result.currency || item.currency || "?"}`;
+  const sameRegion = item.regionKey == null || item.regionKey === regionKey;
+  const previous = sameRegion ? item.lastPrice : (item.lastByRegion || {})[regionKey] ?? null;
+  item.lastByRegion = { ...(item.lastByRegion || {}), ...(item.regionKey ? { [item.regionKey]: item.lastPrice } : {}) };
+  item.lowestByRegion = item.lowestByRegion || (item.lowestPrice != null && item.regionKey ? { [item.regionKey]: item.lowestPrice } : {});
+  const lowestHere = item.lowestByRegion[regionKey];
+  item.lowestByRegion[regionKey] = lowestHere == null ? result.price : Math.min(lowestHere, result.price);
+
   item.lastError = null;
   item.method = result.method;
+  item.region = result.region;
+  item.regionKey = regionKey;
   item.lastPrice = result.price;
-  item.lowestPrice = item.lowestPrice == null ? result.price : Math.min(item.lowestPrice, result.price);
+  item.lowestPrice = item.lowestByRegion[regionKey];
   const history = item.history || (item.history = []);
-  if (history.length && history[history.length - 1].d === today()) history.pop();
-  history.push({ d: today(), p: result.price });
+  if (history.length && history[history.length - 1].d === today() && history[history.length - 1].r === regionKey) history.pop();
+  history.push({ d: today(), p: result.price, r: regionKey });
   if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
 
   if (previous != null && result.price < previous) {
     const diff = Math.round((1 - result.price / previous) * 100);
     return (
       `📉 Цена снизилась: ${label}\n` +
-      `${formatPrice(previous, item.currency)} → ${formatPrice(result.price, item.currency)} (−${diff}%)\n` +
+      `${formatPrice(previous, item.currency)} → ${formatPrice(result.price, item.currency)} (−${diff}%)` +
+      (result.region ? `, цены для ${result.region}` : "") +
+      "\n" +
       item.url
     );
   }
@@ -404,7 +419,7 @@ function renderPage(items, { token, message, telegramLinked, fixedChat }) {
           : "ещё не проверялось";
       return `<li>
         <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener">${escapeHtml(item.name || item.url)}</a>
-        <div class="price">${escapeHtml(formatPrice(item.lastPrice, item.currency))}
+        <div class="price">${escapeHtml(formatPrice(item.lastPrice, item.currency))}${item.region ? ` <small>цены для ${escapeHtml(item.region)}</small>` : ""}
           <small>минимум: ${escapeHtml(formatPrice(item.lowestPrice, item.currency))}</small></div>
         <div class="meta">${status}</div>
         <form method="post" action="/delete?token=${t}"><input type="hidden" name="id" value="${escapeHtml(item.id)}">
@@ -459,6 +474,12 @@ async function workerLocation() {
   } catch {
     return {};
   }
+}
+
+// Код страны, для которой магазин отдал страницу (BG, ES…), или null.
+export function pageCountry(html) {
+  const m = html.match(/"(?:countryCode|country|siteCountry)"\s*:\s*"([A-Za-z]{2})"/);
+  return m ? m[1].toUpperCase() : null;
 }
 
 // Для какой страны магазин отдал страницу — по языку/региону и служебным данным.
