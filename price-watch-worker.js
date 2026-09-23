@@ -142,14 +142,56 @@ function offerPrice(offers) {
     if (!o || typeof o !== "object") continue;
     const price = parseNumber(o.price ?? o.lowPrice ?? o.priceSpecification?.price);
     const currency = o.priceCurrency || o.priceSpecification?.priceCurrency || null;
-    if (price != null) found.push({ price, currency });
+    const soldOut = /OutOfStock|SoldOut|Discontinued/i.test(String(o.availability || ""));
+    if (price != null) found.push({ price, currency, soldOut });
   }
   if (!found.length) return null;
+  // Распроданные размеры не учитываем, если есть хоть что-то в наличии.
+  if (found.some((f) => !f.soldOut)) found.splice(0, found.length, ...found.filter((f) => !f.soldOut));
   // Минимальную цену (например, размер со скидкой) берём только среди
   // предложений в той же валюте, что и первое, — иначе 54 USD «дешевле» 56 EUR.
   const currency = found[0].currency;
   const sameCurrency = found.filter((f) => f.currency === currency);
   return { price: Math.min(...sameCurrency.map((f) => f.price)), currency };
+}
+
+// Все цены, которые удалось найти на странице (для страницы «Подробнее»).
+export function listPrices(html) {
+  const rows = [];
+  const ldBlocks = html.matchAll(/<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi);
+  for (const [, raw] of ldBlocks) {
+    let data;
+    try {
+      data = JSON.parse(raw.trim());
+    } catch {
+      continue;
+    }
+    for (const node of walk(data)) {
+      if (!isProduct(node) || !node.offers) continue;
+      for (const o of Array.isArray(node.offers) ? node.offers : [node.offers]) {
+        if (!o || typeof o !== "object") continue;
+        rows.push({
+          source: "JSON-LD",
+          price: o.price ?? o.lowPrice ?? o.priceSpecification?.price ?? "—",
+          currency: o.priceCurrency || o.priceSpecification?.priceCurrency || "",
+          note: [o.name, o.sku, node.size, o.itemOffered?.size, String(o.availability || "").replace(/^https?:\/\/schema\.org\//, "")]
+            .filter(Boolean)
+            .join(", "),
+        });
+      }
+    }
+  }
+  for (const name of ["product:sale_price:amount", "product:price:amount", "og:price:amount"]) {
+    const value = metaContent(html, "property", name);
+    if (value) rows.push({ source: `meta ${name}`, price: value, currency: metaContent(html, "property", name.replace("amount", "currency")) || "", note: "" });
+  }
+  for (const key of ["redPrice", "salePrice", "currentPrice", "finalPrice", "whitePrice", "wasPrice", "nowPrice"]) {
+    for (const m of html.matchAll(new RegExp(`"${key}"\\s*:\\s*(?:\\{[^}]*?"(?:price|value|amount)"\\s*:\\s*)?"?([0-9][0-9.,]*)`, "g"))) {
+      rows.push({ source: `data ${key}`, price: m[1], currency: "", note: "" });
+      if (rows.length > 60) return rows;
+    }
+  }
+  return rows;
 }
 
 // Возвращает { price, currency, name, method } или { price: null, name }.
@@ -366,7 +408,8 @@ function renderPage(items, { token, message, telegramLinked, fixedChat }) {
           <small>минимум: ${escapeHtml(formatPrice(item.lowestPrice, item.currency))}</small></div>
         <div class="meta">${status}</div>
         <form method="post" action="/delete?token=${t}"><input type="hidden" name="id" value="${escapeHtml(item.id)}">
-          <button class="link" onclick="return confirm('Удалить из списка?')">Удалить</button></form>
+          <button class="link" onclick="return confirm('Удалить из списка?')">Удалить</button>
+          · <a class="link" href="/details?token=${t}&id=${encodeURIComponent(item.id)}">Все найденные цены</a></form>
       </li>`;
     })
     .join("");
@@ -406,6 +449,46 @@ ${message ? `<div class="card msg">${escapeHtml(message)}</div>` : ""}
 </main></body></html>`;
 }
 
+// Страница «Все найденные цены»: открывает товар заново и показывает все
+// цены, которые есть в данных страницы, — чтобы понять, откуда взялась цифра.
+async function renderDetails(item, env) {
+  const pages = [];
+  const direct = await fetchHtml(item.url, FETCH_HEADERS);
+  pages.push({ via: "напрямую", ...direct });
+  if (!direct.html || extractPrice(direct.html).price == null) {
+    const headers = { "X-Return-Format": "html" };
+    if (env.JINA_API_KEY) headers.Authorization = `Bearer ${env.JINA_API_KEY}`;
+    pages.push({ via: "через Jina Reader", ...(await fetchHtml(`https://r.jina.ai/${item.url}`, headers)) });
+  }
+  const sections = pages
+    .map((p) => {
+      if (!p.html) return `<h2>${escapeHtml(p.via)}</h2><p class="err">Не открылась: ${escapeHtml(p.error)}</p>`;
+      const rows = listPrices(p.html);
+      const table = rows.length
+        ? `<table><tr><th>Где</th><th>Цена</th><th>Валюта</th><th>Примечание</th></tr>${rows
+            .map((r) => `<tr><td>${escapeHtml(r.source)}</td><td>${escapeHtml(r.price)}</td><td>${escapeHtml(r.currency)}</td><td>${escapeHtml(r.note)}</td></tr>`)
+            .join("")}</table>`
+        : "<p>Цен в данных страницы не найдено.</p>";
+      return `<h2>${escapeHtml(p.via)}</h2>${table}`;
+    })
+    .join("");
+  return `<!doctype html><html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Найденные цены</title>
+<style>
+  :root { --bg:#f6f6f4; --fg:#1d1d1b; --line:#d9d9d3; --err:#c0392b; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#161615; --fg:#ececea; --line:#3a3a35; --err:#ff7b6b; } }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.45 system-ui, sans-serif; }
+  main { max-width:760px; margin:0 auto; padding:16px; } h1 { font-size:1.2rem; } h2 { font-size:1rem; margin-top:1.4rem; }
+  table { border-collapse:collapse; width:100%; font-size:.9rem; } td, th { border:1px solid var(--line); padding:5px 7px; text-align:left; vertical-align:top; word-break:break-word; }
+  .err { color:var(--err); } a { color:inherit; }
+</style></head><body><main>
+<p><a href="/?token=${escapeHtml(env.ADMIN_TOKEN)}">← Назад к списку</a></p>
+<h1>${escapeHtml(item.name || item.url)}</h1>
+<p>Сейчас в списке: ${escapeHtml(formatPrice(item.lastPrice, item.currency))}. Worker берёт самую низкую цену из JSON-LD среди предложений в одной валюте, не считая распроданных (OutOfStock), если есть что-то в наличии.</p>
+${sections}
+</main></body></html>`;
+}
+
 function redirect(token, message) {
   const params = new URLSearchParams({ token });
   if (message) params.set("msg", message);
@@ -428,6 +511,14 @@ async function handleRequest(request, env) {
     const telegramLinked = Boolean(await env.PRICES.get("tg_chat"));
     const fixedChat = Boolean(env.TELEGRAM_CHAT_ID);
     const html = renderPage(items, { token, message: url.searchParams.get("msg"), telegramLinked, fixedChat });
+    return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
+  }
+
+  if (request.method === "GET" && url.pathname === "/details") {
+    const items = await loadItems(env);
+    const item = items.find((i) => i.id === url.searchParams.get("id"));
+    if (!item) return redirect(token, "Товар не найден.");
+    const html = await renderDetails(item, env);
     return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
   }
 
