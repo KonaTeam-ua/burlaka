@@ -57,11 +57,14 @@
 //       попробует прочитать цену и покажет результат (или причину ошибки).
 //
 // Ограничения: некоторые магазины защищаются от ботов и не отдают страницу
-// серверу (ошибка HTTP 403/429) — такие ссылки проверять не получится. Если
+// серверу (ошибка HTTP 403/429). Тогда Worker пробует открыть её через
+// бесплатный сервис Jina Reader (https://jina.ai/reader) — ссылка на товар при
+// этом передаётся этому сервису. Если не выйдет и так — ссылку проверить не
+// получится. Если
 // магазин поменяет вёрстку и цена перестанет находиться, Worker один раз
 // сообщит об этом в Telegram (а не каждый день).
 
-const MAX_ITEMS = 40; // бесплатный тариф: до 50 внешних запросов за один запуск
+const MAX_ITEMS = 20; // бесплатный тариф: до 50 внешних запросов за запуск, на товар — до 2
 const MAX_HISTORY = 90;
 
 const FETCH_HEADERS = {
@@ -194,21 +197,48 @@ export function extractPrice(html) {
   return { price: null, currency: null, name: fallbackName, method: null };
 }
 
-async function fetchPrice(url) {
+async function fetchHtml(url, headers) {
   let response;
   try {
-    response = await fetch(url, { headers: FETCH_HEADERS, redirect: "follow" });
+    response = await fetch(url, { headers, redirect: "follow" });
   } catch (e) {
     return { error: `не удалось открыть страницу (${e.message})` };
   }
-  if (!response.ok) {
-    const hint = [403, 429, 503].includes(response.status) ? " — похоже, магазин блокирует автоматические запросы" : "";
-    return { error: `магазин ответил HTTP ${response.status}${hint}` };
+  if (!response.ok) return { status: response.status, error: `HTTP ${response.status}` };
+  return { html: await response.text() };
+}
+
+// Запасной путь для магазинов, которые не отдают страницу серверам Cloudflare
+// или рисуют цену скриптом: страницу открывает бесплатный сервис Jina Reader
+// (https://jina.ai/reader, без регистрации, с ограничением частоты запросов)
+// и возвращает готовый HTML.
+async function fetchViaReader(url) {
+  const page = await fetchHtml(`https://r.jina.ai/${url}`, { "X-Return-Format": "html" });
+  if (page.error) return { error: page.error };
+  const result = extractPrice(page.html);
+  return result.price == null ? { ...result, error: "цена не найдена" } : { ...result, method: `${result.method}, через Jina Reader` };
+}
+
+async function fetchPrice(url) {
+  const page = await fetchHtml(url, FETCH_HEADERS);
+  if (page.html) {
+    const result = extractPrice(page.html);
+    if (result.price != null) return result;
+    const viaReader = await fetchViaReader(url);
+    if (!viaReader.error) return viaReader;
+    return { ...result, error: "страница открылась, но цену на ней найти не удалось" };
   }
-  const html = await response.text();
-  const result = extractPrice(html);
-  if (result.price == null) return { ...result, error: "страница открылась, но цену на ней найти не удалось" };
-  return result;
+  if (!page.status) return { error: page.error };
+
+  const viaReader = await fetchViaReader(url);
+  if (!viaReader.error) return viaReader;
+  const blocked = [401, 403, 429, 503].includes(page.status);
+  return {
+    error:
+      `магазин ответил HTTP ${page.status}` +
+      (blocked ? " — похоже, магазин блокирует автоматические запросы" : "") +
+      ` (через Jina Reader тоже не получилось: ${viaReader.error})`,
+  };
 }
 
 // ---------- Хранилище ----------
