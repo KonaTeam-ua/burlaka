@@ -137,15 +137,19 @@ function isProduct(node) {
 
 function offerPrice(offers) {
   const list = Array.isArray(offers) ? offers : [offers];
-  const prices = [];
-  let currency = null;
+  const found = [];
   for (const o of list) {
     if (!o || typeof o !== "object") continue;
-    const p = parseNumber(o.price ?? o.lowPrice ?? o.priceSpecification?.price);
-    if (p != null) prices.push(p);
-    currency = currency || o.priceCurrency || o.priceSpecification?.priceCurrency || null;
+    const price = parseNumber(o.price ?? o.lowPrice ?? o.priceSpecification?.price);
+    const currency = o.priceCurrency || o.priceSpecification?.priceCurrency || null;
+    if (price != null) found.push({ price, currency });
   }
-  return prices.length ? { price: Math.min(...prices), currency } : null;
+  if (!found.length) return null;
+  // Минимальную цену (например, размер со скидкой) берём только среди
+  // предложений в той же валюте, что и первое, — иначе 54 USD «дешевле» 56 EUR.
+  const currency = found[0].currency;
+  const sameCurrency = found.filter((f) => f.currency === currency);
+  return { price: Math.min(...sameCurrency.map((f) => f.price)), currency };
 }
 
 // Возвращает { price, currency, name, method } или { price: null, name }.
@@ -352,7 +356,9 @@ function renderPage(items, { token, message, telegramLinked, fixedChat }) {
       const status = item.lastError
         ? `<span class="err">⚠️ ${escapeHtml(item.lastError)}</span>`
         : item.lastChecked
-          ? `проверено ${escapeHtml(item.lastChecked.slice(0, 16).replace("T", " "))} UTC`
+          ? `проверено ${escapeHtml(item.lastChecked.slice(0, 16).replace("T", " "))} UTC` +
+            (item.method ? ` · найдено: ${escapeHtml(item.method)}` : "") +
+            (item.currency ? "" : " · валюта на странице не указана")
           : "ещё не проверялось";
       return `<li>
         <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener">${escapeHtml(item.name || item.url)}</a>
