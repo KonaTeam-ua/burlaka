@@ -449,6 +449,34 @@ ${message ? `<div class="card msg">${escapeHtml(message)}</div>` : ""}
 </main></body></html>`;
 }
 
+// Где находится сервер, с которого Worker открывает страницы: служебная
+// страница Cloudflare /cdn-cgi/trace отвечает строками вида loc=DE, colo=FRA.
+async function workerLocation() {
+  try {
+    const text = await (await fetch("https://www.cloudflare.com/cdn-cgi/trace")).text();
+    const field = (k) => (text.match(new RegExp(`^${k}=(.*)$`, "m")) || [])[1];
+    return { country: field("loc"), colo: field("colo") };
+  } catch {
+    return {};
+  }
+}
+
+// Для какой страны магазин отдал страницу — по языку/региону и служебным данным.
+export function pageRegion(html) {
+  const hints = [];
+  const lang = (html.match(/<html[^>]*\slang=["']([^"']+)["']/i) || [])[1];
+  if (lang) hints.push(`язык страницы: ${lang}`);
+  const locale = metaContent(html, "property", "og:locale");
+  if (locale) hints.push(`og:locale: ${locale}`);
+  const seen = new Set();
+  for (const m of html.matchAll(/"(countryCode|country|market|locale|siteCountry|shippingCountry)"\s*:\s*"([A-Za-z]{2}(?:[-_][A-Za-z]{2})?)"/g)) {
+    const hint = `${m[1]}: ${m[2]}`;
+    if (!seen.has(hint)) seen.add(hint) && hints.push(hint);
+    if (seen.size >= 6) break;
+  }
+  return hints;
+}
+
 // Страница «Все найденные цены»: открывает товар заново и показывает все
 // цены, которые есть в данных страницы, — чтобы понять, откуда взялась цифра.
 async function renderDetails(item, env) {
@@ -460,16 +488,19 @@ async function renderDetails(item, env) {
     if (env.JINA_API_KEY) headers.Authorization = `Bearer ${env.JINA_API_KEY}`;
     pages.push({ via: "через Jina Reader", ...(await fetchHtml(`https://r.jina.ai/${item.url}`, headers)) });
   }
+  const where = await workerLocation();
   const sections = pages
     .map((p) => {
       if (!p.html) return `<h2>${escapeHtml(p.via)}</h2><p class="err">Не открылась: ${escapeHtml(p.error)}</p>`;
+      const region = pageRegion(p.html);
+      const regionLine = `<p>Страна по данным страницы: ${region.length ? escapeHtml(region.join(" · ")) : "магазин её не указал"}</p>`;
       const rows = listPrices(p.html);
       const table = rows.length
         ? `<table><tr><th>Где</th><th>Цена</th><th>Валюта</th><th>Примечание</th></tr>${rows
             .map((r) => `<tr><td>${escapeHtml(r.source)}</td><td>${escapeHtml(r.price)}</td><td>${escapeHtml(r.currency)}</td><td>${escapeHtml(r.note)}</td></tr>`)
             .join("")}</table>`
         : "<p>Цен в данных страницы не найдено.</p>";
-      return `<h2>${escapeHtml(p.via)}</h2>${table}`;
+      return `<h2>${escapeHtml(p.via)}</h2>${regionLine}${table}`;
     })
     .join("");
   return `<!doctype html><html lang="ru"><head><meta charset="utf-8">
@@ -485,6 +516,11 @@ async function renderDetails(item, env) {
 <p><a href="/?token=${escapeHtml(env.ADMIN_TOKEN)}">← Назад к списку</a></p>
 <h1>${escapeHtml(item.name || item.url)}</h1>
 <p>Сейчас в списке: ${escapeHtml(formatPrice(item.lastPrice, item.currency))}. Worker берёт самую низкую цену из JSON-LD среди предложений в одной валюте, не считая распроданных (OutOfStock), если есть что-то в наличии.</p>
+<p>Сервер воркера сейчас: ${
+    where.country
+      ? `страна <b>${escapeHtml(where.country)}</b> (дата-центр Cloudflare ${escapeHtml(where.colo || "?")})`
+      : "определить не удалось"
+  }. Магазин обычно показывает цены страны этого сервера. При проверке через Jina Reader страницу открывают серверы Jina, их страна может быть другой.</p>
 ${sections}
 </main></body></html>`;
 }
