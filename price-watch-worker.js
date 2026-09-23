@@ -41,7 +41,13 @@
 //                              который уже занят другой задачей; для нового
 //                              бота можно не задавать — см. шаг 10);
 //         ADMIN_TOKEN        — придумайте длинный пароль (он защищает
-//                              страницу управления от посторонних).
+//                              страницу управления от посторонних);
+//         JINA_API_KEY       — необязательно: бесплатный ключ Jina Reader
+//                              для магазинов, которые блокируют Worker.
+//                              Откройте https://jina.ai/reader — ключ
+//                              (начинается с jina_) показан на странице в
+//                              блоке "API Key"; без ключа запросы через
+//                              Jina часто упираются в лимит (HTTP 429).
 //    8. "Settings" → "Trigger Events" (Triggers) → "Add" → "Cron Triggers":
 //       например `0 6 * * *` — каждый день в 06:00 UTC (09:00 по Киеву летом).
 //       Время указывается в UTC.
@@ -211,25 +217,30 @@ async function fetchHtml(url, headers) {
 // или рисуют цену скриптом: страницу открывает бесплатный сервис Jina Reader
 // (https://jina.ai/reader, без регистрации, с ограничением частоты запросов)
 // и возвращает готовый HTML.
-async function fetchViaReader(url) {
-  const page = await fetchHtml(`https://r.jina.ai/${url}`, { "X-Return-Format": "html" });
+async function fetchViaReader(url, env) {
+  const headers = { "X-Return-Format": "html" };
+  if (env.JINA_API_KEY) headers.Authorization = `Bearer ${env.JINA_API_KEY}`;
+  const page = await fetchHtml(`https://r.jina.ai/${url}`, headers);
+  if (page.status === 429 && !env.JINA_API_KEY) {
+    return { error: "HTTP 429 — лимит бесплатных запросов без ключа; добавьте секрет JINA_API_KEY (см. начало кода)" };
+  }
   if (page.error) return { error: page.error };
   const result = extractPrice(page.html);
   return result.price == null ? { ...result, error: "цена не найдена" } : { ...result, method: `${result.method}, через Jina Reader` };
 }
 
-async function fetchPrice(url) {
+async function fetchPrice(url, env) {
   const page = await fetchHtml(url, FETCH_HEADERS);
   if (page.html) {
     const result = extractPrice(page.html);
     if (result.price != null) return result;
-    const viaReader = await fetchViaReader(url);
+    const viaReader = await fetchViaReader(url, env);
     if (!viaReader.error) return viaReader;
     return { ...result, error: "страница открылась, но цену на ней найти не удалось" };
   }
   if (!page.status) return { error: page.error };
 
-  const viaReader = await fetchViaReader(url);
+  const viaReader = await fetchViaReader(url, env);
   if (!viaReader.error) return viaReader;
   const blocked = [401, 403, 429, 503].includes(page.status);
   return {
@@ -282,8 +293,8 @@ async function notify(env, text) {
 
 // Проверяет один товар, обновляет его запись и возвращает текст уведомления
 // (или null, если сообщать не о чем).
-async function checkItem(item) {
-  const result = await fetchPrice(item.url);
+async function checkItem(item, env) {
+  const result = await fetchPrice(item.url, env);
   item.lastChecked = new Date().toISOString();
   if (!item.name && result.name) item.name = result.name;
   if (result.currency) item.currency = result.currency;
@@ -320,7 +331,7 @@ async function checkAll(env) {
   const items = await loadItems(env);
   const messages = [];
   for (const item of items) {
-    const message = await checkItem(item);
+    const message = await checkItem(item, env);
     if (message) messages.push(message);
   }
   await saveItems(env, items);
@@ -429,7 +440,7 @@ async function handleRequest(request, env) {
     if (items.some((i) => i.url === link.href)) return redirect(token, "Этот товар уже в списке.");
     if (items.length >= MAX_ITEMS) return redirect(token, `В списке уже ${MAX_ITEMS} товаров — это максимум для бесплатного тарифа.`);
     const item = { id: crypto.randomUUID(), url: link.href, name: null, currency: null, lastPrice: null, lowestPrice: null, history: [] };
-    await checkItem(item);
+    await checkItem(item, env);
     items.push(item);
     await saveItems(env, items);
     const message = item.lastError
