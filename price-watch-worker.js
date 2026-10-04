@@ -69,7 +69,7 @@
 // получится. Если магазин поменяет вёрстку и цена перестанет находиться,
 // Worker один раз сообщит об этом в Telegram (а не каждый день).
 
-const MAX_ITEMS = 20; // бесплатный тариф: до 50 внешних запросов за запуск, на товар — до 2
+const MAX_ITEMS = 15; // бесплатный тариф: до 50 внешних запросов за запуск, на товар — до 3
 const MAX_HISTORY = 90;
 
 const FETCH_HEADERS = {
@@ -106,6 +106,8 @@ export function parseNumber(value) {
 
 function decodeEntities(s) {
   return s
+    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)))
     .replace(/&quot;/g, '"')
     .replace(/&#39;|&#x27;/g, "'")
     .replace(/&lt;/g, "<")
@@ -211,7 +213,7 @@ export function extractPrice(html) {
     for (const node of walk(data)) {
       if (!isProduct(node) || !node.offers) continue;
       const found = offerPrice(node.offers);
-      if (found) return { ...found, name: node.name || fallbackName, method: "JSON-LD" };
+      if (found) return { ...found, name: node.name ? decodeEntities(String(node.name)).trim() : fallbackName, method: "JSON-LD" };
     }
   }
 
@@ -270,22 +272,67 @@ async function fetchViaReader(url, env) {
   if (page.status === 429 && !env.JINA_API_KEY) {
     return { error: "HTTP 429 — лимит бесплатных запросов без ключа; добавьте секрет JINA_API_KEY (см. начало кода)" };
   }
+  if (page.status === 402) {
+    return { error: "HTTP 402 — на ключе Jina закончился бесплатный лимит (пополнить или сменить ключ: https://jina.ai/reader)" };
+  }
   if (page.error) return { error: page.error };
   const result = { ...extractPrice(page.html), region: pageCountry(page.html) };
   return result.price == null ? { ...result, error: "цена не найдена" } : { ...result, method: `${result.method}, через Jina Reader` };
 }
 
+// Магазины на Shopify (адрес вида …/products/название) отдают данные товара
+// в JSON по адресу …/products/название.js — без защиты от ботов и без Jina.
+// Цены там в центах; если в ссылке выбран вариант (?variant=…), берём его,
+// иначе самую низкую цену среди вариантов в наличии.
+async function fetchShopify(url) {
+  const link = new URL(url);
+  const handle = (link.pathname.match(/\/products\/([^/?#]+)/) || [])[1];
+  if (!handle) return { error: "не Shopify" };
+  let data;
+  try {
+    const response = await fetch(`${link.origin}/products/${handle}.js`, { headers: { ...FETCH_HEADERS, Accept: "application/json" } });
+    if (!response.ok) return { error: `HTTP ${response.status}` };
+    data = await response.json();
+  } catch (e) {
+    return { error: e.message };
+  }
+  const variants = Array.isArray(data.variants) ? data.variants : [];
+  const chosen = variants.find((v) => String(v.id) === link.searchParams.get("variant"));
+  const available = variants.filter((v) => v.available);
+  const pool = chosen ? [chosen] : available.length ? available : variants;
+  const cents = pool.map((v) => Number(v.price)).filter((n) => Number.isFinite(n) && n > 0);
+  if (!cents.length) return { error: "цена не найдена" };
+  return {
+    price: Math.min(...cents) / 100,
+    currency: null,
+    name: data.title ? decodeEntities(String(data.title)) : null,
+    method: "Shopify JSON",
+    region: null,
+  };
+}
+
 async function fetchPrice(url, env) {
   const page = await fetchHtml(url, FETCH_HEADERS);
+  const isShopify = /\/products\/[^/?#]+/.test(new URL(url).pathname);
   if (page.html) {
     const result = { ...extractPrice(page.html), region: pageCountry(page.html) };
     if (result.price != null) return result;
+    if (isShopify) {
+      const shopify = await fetchShopify(url);
+      if (!shopify.error) return shopify;
+    }
     const viaReader = await fetchViaReader(url, env);
     if (!viaReader.error) return viaReader;
     return { ...result, error: "страница открылась, но цену на ней найти не удалось" };
   }
   if (!page.status) return { error: page.error };
 
+  let shopifyNote = "";
+  if (isShopify) {
+    const shopify = await fetchShopify(url);
+    if (!shopify.error) return shopify;
+    shopifyNote = `; данные Shopify: ${shopify.error}`;
+  }
   const viaReader = await fetchViaReader(url, env);
   if (!viaReader.error) return viaReader;
   const blocked = [401, 403, 429, 503].includes(page.status);
@@ -293,7 +340,7 @@ async function fetchPrice(url, env) {
     error:
       `магазин ответил HTTP ${page.status}` +
       (blocked ? " — похоже, магазин блокирует автоматические запросы" : "") +
-      ` (через Jina Reader тоже не получилось: ${viaReader.error})`,
+      ` (через Jina Reader тоже не получилось: ${viaReader.error}${shopifyNote})`,
   };
 }
 
@@ -343,6 +390,7 @@ async function checkItem(item, env) {
   const result = await fetchPrice(item.url, env);
   item.lastChecked = new Date().toISOString();
   if (!item.name && result.name) item.name = result.name;
+  if (item.name) item.name = decodeEntities(item.name);
   if (result.currency) item.currency = result.currency;
   const label = item.name || item.url;
 
