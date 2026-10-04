@@ -258,7 +258,20 @@ async function fetchHtml(url, headers) {
     return { error: `не удалось открыть страницу (${e.message})` };
   }
   if (!response.ok) return { status: response.status, error: `HTTP ${response.status}` };
-  return { html: await response.text() };
+  const html = await response.text();
+  const block = blockPageTitle(html);
+  if (block) return { status: 403, error: `вместо товара страница-заглушка «${block}»` };
+  return { html };
+}
+
+// Некоторые защиты от ботов (Akamai, Cloudflare, PerimeterX…) отвечают не
+// ошибкой, а обычной страницей-заглушкой с кодом 200. Узнаём их по заголовку.
+export function blockPageTitle(html) {
+  const title = decodeEntities(((html.match(/<title[^>]*>([^<]*)<\/title>/i) || [])[1] || "").trim());
+  const looksBlocked =
+    /^(access denied|attention required|just a moment|pardon our interruption|are you a (human|robot)|robot check|security check|request blocked|403 forbidden|forbidden)\b/i.test(title) ||
+    /errors\.edgesuite\.net|_Incapsula_Resource|px-captcha|cf-challenge|challenge-platform/i.test(html.slice(0, 20000));
+  return looksBlocked ? title || "проверка на робота" : null;
 }
 
 // Запасной путь для магазинов, которые не отдают страницу серверам Cloudflare
@@ -338,7 +351,7 @@ async function fetchPrice(url, env) {
   const blocked = [401, 403, 429, 503].includes(page.status);
   return {
     error:
-      `магазин ответил HTTP ${page.status}` +
+      (page.error.startsWith("HTTP") ? `магазин ответил ${page.error}` : `магазин показал ${page.error}`) +
       (blocked ? " — похоже, магазин блокирует автоматические запросы" : "") +
       ` (через Jina Reader тоже не получилось: ${viaReader.error}${shopifyNote})`,
   };
